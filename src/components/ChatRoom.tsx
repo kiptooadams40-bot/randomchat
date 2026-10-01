@@ -54,7 +54,9 @@ export default function ChatRoom() {
 
   const refresh = useCallback(async () => {
     const r = await fetch("/api/session", { cache: "no-store" });
-    setSession(await r.json());
+    const s: Session = await r.json();
+    setSession(s);
+    return s;
   }, []);
 
   useEffect(() => {
@@ -68,7 +70,8 @@ export default function ChatRoom() {
 
   if (!session) return <p className="text-neutral-400">Loading…</p>;
   if (!session.ageVerified) {
-    return <AgeGate onVerified={() => setSession({ ...session, ageVerified: true })} />;
+    // Re-read the server's view: only proceeds if the verification actually persisted.
+    return <AgeGate onVerified={async () => (await refresh()).ageVerified} />;
   }
 
   const idle = chat.phase === "idle";

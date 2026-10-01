@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 
-export default function AgeGate({ onVerified }: { onVerified: () => void }) {
+/** `onVerified` must re-check with the server and resolve to whether it really stuck. */
+export default function AgeGate({ onVerified }: { onVerified: () => Promise<boolean> }) {
   const [birthDate, setBirthDate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -17,9 +18,15 @@ export default function AgeGate({ onVerified }: { onVerified: () => void }) {
       body: JSON.stringify({ birthDate }),
     });
     const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setBusy(false);
+      setError(data.error ?? "Verification failed.");
+      return;
+    }
+    // Don't trust the optimistic path: confirm the server actually remembered it.
+    const stuck = await onVerified();
     setBusy(false);
-    if (res.ok) onVerified();
-    else setError(data.error ?? "Verification failed.");
+    if (!stuck) setError("We couldn't save your verification. Make sure cookies are enabled for this site, then try again.");
   }
 
   return (
