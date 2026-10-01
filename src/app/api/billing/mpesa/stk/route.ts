@@ -1,9 +1,8 @@
-import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isProd } from "@/lib/env";
+import { createMpesa } from "@/lib/repo";
 import { getUser } from "@/lib/session";
-import { db } from "@/lib/store";
 
 // Kenyan mobile: 07XXXXXXXX, 01XXXXXXXX, 2547XXXXXXXX, +2547XXXXXXXX
 const Body = z.object({ phone: z.string().regex(/^(?:\+?254|0)[17]\d{8}$/) });
@@ -17,7 +16,5 @@ export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: "bad_phone" }, { status: 400 });
   const u = await getUser();
-  const id = randomUUID();
-  db.stk.set(id, { id, userId: u.id, createdAt: Date.now(), done: false });
-  return NextResponse.json({ id, simulated: true });
+  return NextResponse.json({ id: await createMpesa(u.id), simulated: true });
 }

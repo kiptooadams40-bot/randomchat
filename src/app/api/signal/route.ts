@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { drainSignals, pushSignal } from "@/lib/repo";
 import { getUser } from "@/lib/session";
-import { drainSignals, pushSignal } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -19,14 +19,13 @@ export async function POST(req: Request) {
   if (JSON.stringify(payload ?? null).length > 20_000) {
     return NextResponse.json({ error: "too_large" }, { status: 413 });
   }
-  const ok = pushSignal(matchId, u.id, { type, payload });
+  const ok = await pushSignal(matchId, u.id, type, payload);
   return ok ? NextResponse.json({ ok: true }) : NextResponse.json({ ended: true }, { status: 410 });
 }
 
 export async function GET(req: Request) {
   const u = await getUser();
   const matchId = new URL(req.url).searchParams.get("matchId") ?? "";
-  const messages = drainSignals(matchId, u.id);
-  if (messages === null) return NextResponse.json({ ended: true });
-  return NextResponse.json({ messages });
+  if (!z.string().uuid().safeParse(matchId).success) return NextResponse.json({ ended: true });
+  return NextResponse.json(await drainSignals(matchId, u.id));
 }

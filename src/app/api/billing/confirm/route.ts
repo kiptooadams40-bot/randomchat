@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { stripeConfigured } from "@/lib/env";
 import { VIP_PASS, getPlan } from "@/lib/plans";
+import { activatePlan, grantVipPass, setStripeCustomer } from "@/lib/repo";
 import { getUser } from "@/lib/session";
-import { activatePlan, grantVip } from "@/lib/store";
 import { getStripe } from "@/lib/stripe";
 
 export const dynamic = "force-dynamic";
@@ -16,15 +16,20 @@ export async function GET(req: Request) {
   if (s.payment_status !== "paid" || s.metadata?.userId !== u.id) {
     return NextResponse.json({ ok: false }, { status: 402 });
   }
-  if (typeof s.customer === "string") u.stripeCustomerId = s.customer;
+  if (typeof s.customer === "string") await setStripeCustomer(u.id, s.customer);
   const product = s.metadata?.product;
   if (product === VIP_PASS.id) {
-    grantVip(u.id, VIP_PASS.hours, s.id);
+    await grantVipPass(u.id, s.id);
   } else {
     const plan = getPlan(product);
     if (!plan) return NextResponse.json({ ok: false }, { status: 402 });
     // Same ref the webhook uses (the first invoice), so the two never double-activate.
-    activatePlan(u.id, plan.id, typeof s.invoice === "string" ? s.invoice : s.id, s.metadata?.billing === "once" ? "once" : "recurring");
+    await activatePlan(
+      u.id,
+      plan.id,
+      typeof s.invoice === "string" ? s.invoice : s.id,
+      s.metadata?.billing === "once" ? "once" : "recurring",
+    );
   }
   return NextResponse.json({ ok: true, product });
 }

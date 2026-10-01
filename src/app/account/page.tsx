@@ -2,7 +2,7 @@ import Link from "next/link";
 import ManageBilling from "@/components/ManageBilling";
 import { FREE_MATCHES, getPlan } from "@/lib/plans";
 import { peekUser } from "@/lib/session";
-import { isPremium, isVip } from "@/lib/store";
+import { isPremium, isVip } from "@/lib/entitlements";
 
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Account" };

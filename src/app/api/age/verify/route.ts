@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isProd } from "@/lib/env";
-import { getUser, rememberAgeVerified } from "@/lib/session";
+import { setAgeVerified } from "@/lib/repo";
+import { getUser } from "@/lib/session";
 
 const Body = z.object({ birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 
@@ -28,9 +29,9 @@ export async function POST(req: Request) {
   const age = ageOf(parsed.data.birthDate);
   if (age < 18) return NextResponse.json({ error: "You must be 18 or older." }, { status: 403 });
   const u = await getUser();
-  // Persist in a signed cookie, not just server memory (serverless instances don't share it).
+  // Persisted in Postgres (profiles.age_verified): the single source of truth for every instance.
   try {
-    await rememberAgeVerified(u);
+    await setAgeVerified(u.id);
   } catch (e) {
     console.error("[age] could not persist verification:", e);
     return NextResponse.json({ error: "Age verification is temporarily unavailable." }, { status: 503 });

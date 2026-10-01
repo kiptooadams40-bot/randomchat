@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
+import { isVip } from "@/lib/entitlements";
 import { appUrl } from "@/lib/env";
 import { REFERRAL } from "@/lib/plans";
 import { getUser } from "@/lib/session";
-import { isVip } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 

@@ -1,16 +1,13 @@
 import { NextResponse } from "next/server";
-import { isProd } from "@/lib/env";
-import { REF_COOKIE } from "@/lib/session";
-import { db } from "@/lib/store";
+import { referrerExists } from "@/lib/repo";
+import { REF_COOKIE, cookieOptions } from "@/lib/session";
 
 /** Referral landing: remember who invited this visitor, then send them home. */
 export async function GET(req: Request, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params;
   const res = NextResponse.redirect(new URL("/", req.url));
-  if (db.codes.has(code)) {
-    res.cookies.set(REF_COOKIE, code, {
-      httpOnly: true, sameSite: "lax", secure: isProd, path: "/", maxAge: 60 * 60 * 24 * 30,
-    });
+  if (/^[0-9a-f]{8}$/.test(code) && (await referrerExists(code).catch(() => false))) {
+    res.cookies.set(REF_COOKIE, code, cookieOptions());
   }
   return res;
 }

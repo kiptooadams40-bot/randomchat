@@ -1,19 +1,12 @@
-import { randomUUID } from "crypto";
+import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
-import { AGE_COOKIE, AGE_COOKIE_MAX_AGE, signAge, verifyAge } from "./ageCookie";
 import { appUrl } from "./env";
-import { touchActivity } from "./referrals";
-import { createUser, db, normalizeUser, type User } from "./store";
+import type { User } from "./entitlements";
+import { getProfile, setReferrer, touchActivity } from "./repo";
 
-const COOKIE = "rc_uid";
 export const REF_COOKIE = "rc_ref";
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * `Secure` follows the site's real protocol, not the app environment: a Secure
- * cookie is silently dropped by browsers on plain http, which would make every
- * request look like a brand-new visitor.
- */
+/** `Secure` follows the site's real protocol: browsers drop Secure cookies on plain http. */
 export function cookieOptions(maxAge = 60 * 60 * 24 * 30) {
   return {
     httpOnly: true,
@@ -26,50 +19,65 @@ export function cookieOptions(maxAge = 60 * 60 * 24 * 30) {
 
 type Jar = Awaited<ReturnType<typeof cookies>>;
 
-/** Restore the age flag from the signed cookie (the in-memory record may be brand new). */
-function hydrateAge(u: User, jar: Jar) {
-  if (!u.ageVerified && verifyAge(jar.get(AGE_COOKIE)?.value, u.id)) u.ageVerified = true;
+/** Supabase Auth client bound to the request cookies (the anonymous session lives there). */
+function authClient(jar: Jar) {
+  return createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    cookies: {
+      getAll: () => jar.getAll(),
+      setAll: (list) => {
+        try {
+          list.forEach(({ name, value, options }) => jar.set(name, value, options));
+        } catch {
+          /* Server Component: cookies are read-only; middleware refreshes the session. */
+        }
+      },
+    },
+  });
 }
 
-/** Called after a successful age check: persists it in a signed cookie. */
-export async function rememberAgeVerified(u: User) {
-  u.ageVerified = true;
-  (await cookies()).set(AGE_COOKIE, signAge(u.id), cookieOptions(AGE_COOKIE_MAX_AGE));
+/** Verified user id from the session JWT (no network call with asymmetric signing keys). */
+async function sessionUserId(sb: ReturnType<typeof authClient>): Promise<string | null> {
+  const { data } = await sb.auth.getClaims();
+  return data?.claims?.sub ?? null;
 }
 
-/** Route-handler only: resolves the visitor, creating an anonymous user + cookie if needed. */
+/**
+ * Route-handler only. Resolves the visitor from their Supabase session, signing
+ * them in anonymously on first visit, and loads their profile from Postgres.
+ */
 export async function getUser(): Promise<User> {
   const jar = await cookies();
-  const id = jar.get(COOKIE)?.value;
-  const validId = id && UUID.test(id) ? id : undefined;
+  const sb = authClient(jar);
 
-  let u = validId ? db.users.get(validId) : undefined;
-  if (!u && validId) {
-    // The cookie is valid but this server instance has never seen it (cold start /
-    // another serverless instance). Keep the SAME identity instead of minting a new
-    // one, so the signed age cookie (bound to this id) keeps working.
-    u = createUser(validId, null);
-  }
-  if (u) {
-    hydrateAge(u, jar);
-    touchActivity(u);
-    return normalizeUser(u);
+  let uid = await sessionUserId(sb);
+  let isNew = false;
+  if (!uid) {
+    const { data, error } = await sb.auth.signInAnonymously();
+    if (error || !data.user) {
+      throw new Error(`Anonymous sign-in failed (enable it in Supabase Auth settings): ${error?.message ?? "no user"}`);
+    }
+    uid = data.user.id;
+    isNew = true;
   }
 
-  const newId = randomUUID();
-  jar.set(COOKIE, newId, cookieOptions());
-  // Attribute new users to the referrer whose link brought them here.
-  const refCode = jar.get(REF_COOKIE)?.value;
-  const referrer = refCode ? db.codes.get(refCode) : undefined;
-  return createUser(newId, referrer ?? null);
+  // Attribute brand-new visitors to the referrer whose invite link brought them here.
+  if (isNew) {
+    const code = jar.get(REF_COOKIE)?.value;
+    if (code) await setReferrer(uid, code).catch(() => {});
+  }
+
+  const u = await getProfile(uid);
+  if (!u) throw new Error(`No profile for user ${uid}: run supabase/schema.sql first.`);
+
+  // Only credited referred users still working toward the 10-minute engagement mark
+  // need activity tracking, so ordinary requests cost a single database call.
+  if (u.referralCredited && !u.engagementCounted) await touchActivity(u.id).catch(() => {});
+  return u;
 }
 
-/** Safe in server components (never writes cookies). */
+/** Safe in Server Components (never signs in or writes cookies). */
 export async function peekUser(): Promise<User | null> {
   const jar = await cookies();
-  const id = jar.get(COOKIE)?.value;
-  const u = id && UUID.test(id) ? db.users.get(id) : undefined;
-  if (!u) return null;
-  hydrateAge(u, jar);
-  return normalizeUser(u);
+  const uid = await sessionUserId(authClient(jar));
+  return uid ? getProfile(uid) : null;
 }

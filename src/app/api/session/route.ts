@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
+import { freeMatchesLeft, isPremium, isVip } from "@/lib/entitlements";
 import { getUser } from "@/lib/session";
-import { freeMatchesLeft, isPremium, isVip } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 

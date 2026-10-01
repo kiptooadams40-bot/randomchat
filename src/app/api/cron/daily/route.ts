@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { dailyMaintenance } from "@/lib/store";
+import { dailyMaintenance } from "@/lib/repo";
 
 export const dynamic = "force-dynamic";
 
@@ -8,5 +8,5 @@ export async function GET(req: Request) {
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  return NextResponse.json(dailyMaintenance());
+  return NextResponse.json(await dailyMaintenance());
 }

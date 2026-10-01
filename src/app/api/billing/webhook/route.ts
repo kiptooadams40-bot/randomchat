@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { stripeConfigured } from "@/lib/env";
 import { VIP_PASS, getPlan } from "@/lib/plans";
-import { activatePlan, db, grantVip } from "@/lib/store";
+import { activatePlan, grantVipPass, setStripeCustomer } from "@/lib/repo";
 import { getStripe } from "@/lib/stripe";
 
 export async function POST(req: Request) {
@@ -23,15 +23,14 @@ export async function POST(req: Request) {
     const s = event.data.object;
     const userId = s.metadata?.userId;
     if (s.payment_status === "paid" && userId) {
-      const u = db.users.get(userId);
-      if (u && typeof s.customer === "string") u.stripeCustomerId = s.customer;
+      if (typeof s.customer === "string") await setStripeCustomer(userId, s.customer);
       if (s.metadata?.product === VIP_PASS.id) {
-        grantVip(userId, VIP_PASS.hours, s.id);
+        await grantVipPass(userId, s.id);
       } else {
         const plan = getPlan(s.metadata?.product);
         if (plan) {
           const billing = s.metadata?.billing === "once" ? "once" : "recurring";
-          activatePlan(userId, plan.id, typeof s.invoice === "string" ? s.invoice : s.id, billing);
+          await activatePlan(userId, plan.id, typeof s.invoice === "string" ? s.invoice : s.id, billing);
         }
       }
     }
@@ -49,7 +48,7 @@ export async function POST(req: Request) {
     if (subId) {
       const sub = await getStripe().subscriptions.retrieve(subId);
       const plan = getPlan(sub.metadata?.product);
-      if (plan && sub.metadata?.userId) activatePlan(sub.metadata.userId, plan.id, inv.id);
+      if (plan && sub.metadata?.userId) await activatePlan(sub.metadata.userId, plan.id, inv.id, "recurring");
     }
   }
   return NextResponse.json({ received: true });
