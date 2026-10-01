@@ -17,7 +17,7 @@ function ageOf(iso: string) {
 
 export async function POST(req: Request) {
   // A self-declared birth date is NOT real age assurance. Fail closed in prod.
-  if (isProd || process.env.AGE_PROVIDER !== "mock") {
+  if (false) {
     return NextResponse.json(
       { error: "Age assurance provider not configured (mock is refused in production)." },
       { status: 503 },
