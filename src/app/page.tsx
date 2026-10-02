@@ -66,7 +66,7 @@ export default function Home() {
       <section className="mt-6 rounded-3xl border border-violet-500/40 bg-violet-950/30 p-8" aria-label="Premium">
         <h2 className="text-2xl font-bold">Go Premium</h2>
         <p className="mx-auto mt-2 max-w-lg text-neutral-300">
-          Unlimited chat time, no blur, and the Boys / Girls / Both filter. Pay once or subscribe. Your choice.
+          Unlimited chat time, no blur, and the Boys / Girls / Both filter. Pay once with card or M-Pesa. Nothing renews.
         </p>
         <Link href="/pricing" className="mt-5 inline-block rounded-full bg-violet-600 px-8 py-3 font-semibold hover:bg-violet-500">
           Unlock Premium

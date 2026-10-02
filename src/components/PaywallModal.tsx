@@ -3,15 +3,15 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { startCheckout } from "@/lib/checkout-client";
-import { PLANS, formatPrice, type Billing, type PlanId } from "@/lib/plans";
-import BillingToggle from "./BillingToggle";
+import { PLANS, formatKes, formatPrice, quote, type PayMethod, type PlanId } from "@/lib/plans";
+import MethodToggle from "./MethodToggle";
 
 /** Premium upsell, shown when a free user tries the Boys / Girls filter. */
 export default function PaywallModal({ onClose }: { onClose: () => void }) {
-  const [busy, setBusy] = useState<PlanId | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<PlanId>("monthly");
-  const [billing, setBilling] = useState<Billing>("recurring");
+  const [method, setMethod] = useState<PayMethod>("card");
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -19,14 +19,15 @@ export default function PaywallModal({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const selected = PLANS.find((p) => p.id === plan)!;
+  const q = quote(plan, method);
 
-  async function buy() {
-    setBusy(plan);
+  async function pay() {
+    setBusy(true);
     setError(null);
-    if (!(await startCheckout(plan, { billing }))) {
-      setError("Payments are unavailable right now. Please try again shortly.");
-      setBusy(null);
+    const err = await startCheckout(plan, method); // navigates to PesaPal on success
+    if (err) {
+      setError(err);
+      setBusy(false);
     }
   }
 
@@ -40,9 +41,7 @@ export default function PaywallModal({ onClose }: { onClose: () => void }) {
       <div className="w-full max-w-lg rounded-3xl border border-violet-500/50 bg-neutral-950 p-6 shadow-2xl shadow-violet-900/40">
         <p className="text-sm font-semibold uppercase tracking-wide text-violet-300">🔒 Premium feature</p>
         <h2 id="paywall-title" className="mt-1 text-3xl font-extrabold">Choose who you meet.</h2>
-        <p className="mt-2 text-neutral-300">
-          The Boys / Girls filter is for Premium members. Pick a plan and how you want to pay.
-        </p>
+        <p className="mt-2 text-neutral-300">The Boys / Girls filter is for Premium members. Pick a plan and how you want to pay.</p>
 
         <ul className="mt-4 space-y-1 text-sm text-neutral-200">
           <li>✅ Boys / Girls / Both filter</li>
@@ -57,7 +56,7 @@ export default function PaywallModal({ onClose }: { onClose: () => void }) {
               role="radio"
               aria-checked={plan === p.id}
               onClick={() => setPlan(p.id)}
-              disabled={busy !== null}
+              disabled={busy}
               className={`flex w-full items-center justify-between rounded-2xl border px-5 py-3 text-left font-semibold transition disabled:opacity-60 ${
                 plan === p.id ? "border-violet-500 bg-violet-950/50" : "border-transparent bg-neutral-800 hover:bg-neutral-700"
               }`}
@@ -66,28 +65,29 @@ export default function PaywallModal({ onClose }: { onClose: () => void }) {
                 {p.name}
                 <span className="block text-xs font-normal text-neutral-300">{p.days} days</span>
               </span>
-              <span>{formatPrice(p.priceCents)}</span>
+              <span className="text-right">
+                {method === "card" ? formatPrice(p.priceCents) : formatKes(p.kes)}
+              </span>
             </button>
           ))}
         </div>
 
         <div className="mt-4">
-          <BillingToggle plan={selected} value={billing} onChange={setBilling} disabled={busy !== null} />
+          <MethodToggle value={method} onChange={setMethod} disabled={busy} />
+          <p className="mt-2 text-xs text-neutral-400">
+            One-time payment on PesaPal&apos;s secure page. {method === "card" ? "Charged in USD." : "Charged in KES."} Nothing renews.
+          </p>
         </div>
 
         <button
-          onClick={buy}
-          disabled={busy !== null}
+          onClick={pay}
+          disabled={busy}
           className="mt-4 w-full rounded-full bg-violet-600 py-3 text-lg font-extrabold hover:bg-violet-500 disabled:opacity-60"
         >
-          {busy
-            ? "Redirecting…"
-            : billing === "recurring"
-              ? `Subscribe · ${formatPrice(selected.priceCents)}`
-              : `Pay once · ${formatPrice(selected.priceCents)}`}
+          {busy ? "Redirecting to PesaPal…" : `Pay ${q.display}`}
         </button>
 
-        {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+        {error && <p className="mt-3 text-sm text-red-400" role="alert">{error}</p>}
         <p className="mt-3 text-center text-xs text-neutral-500">
           By purchasing you agree to the <Link href="/terms" className="underline">Terms</Link>.
         </p>

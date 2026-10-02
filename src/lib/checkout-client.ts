@@ -1,24 +1,24 @@
-import type { Billing, ProductId } from "./plans";
+import type { PayMethod, ProductId } from "./plans";
 
 /**
- * Starts a checkout. With `newTab`, the checkout opens in a separate tab so a
- * live (blurred) chat isn't lost; the caller then polls /api/session for the
- * unlock. Returns false if payments are unavailable.
+ * Starts a PesaPal checkout: asks the server to create the order, then sends the
+ * browser straight to PesaPal's hosted page (M-Pesa and card entry happen there).
+ * Resolves to an error message, or never resolves on success (the page navigates away).
  */
-export async function startCheckout(product: ProductId, opts: { newTab?: boolean; billing?: Billing } = {}): Promise<boolean> {
-  // Open synchronously (inside the click handler) so popup blockers allow it.
-  const tab = opts.newTab ? window.open("", "_blank") : null;
-  const res = await fetch("/api/billing/checkout", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ product, billing: opts.billing ?? "recurring" }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (res.ok && data.url) {
-    if (tab) tab.location.href = data.url;
-    else window.location.href = data.url;
-    return true;
+export async function startCheckout(product: ProductId, method: PayMethod): Promise<string | null> {
+  try {
+    const res = await fetch("/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product, method }),
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok && typeof data?.redirect_url === "string") {
+      window.location.href = data.redirect_url;
+      return new Promise<never>(() => {}); // keep the button in its "Redirecting…" state while navigating
+    }
+    return data?.message ?? "We couldn't start the payment. Please try again.";
+  } catch {
+    return "Network error. Check your connection and try again.";
   }
-  tab?.close();
-  return false;
 }

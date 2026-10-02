@@ -7,7 +7,7 @@ export type ChatMsg = { id: number; from: "me" | "peer"; text: string; original?
 import type { GenderFilter } from "@/lib/plans";
 
 export type Filter = GenderFilter;
-/** "vip" = flash-deal pass (blur unlock); "gender" = Premium subscription upsell. */
+/** "vip" = flash-deal pass (blur unlock); "gender" = Premium upsell. */
 export type PaywallReason = "vip" | "gender" | null;
 export type BlurMode = "tease" | "location" | null;
 

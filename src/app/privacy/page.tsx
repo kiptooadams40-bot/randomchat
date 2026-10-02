@@ -15,7 +15,7 @@ export default function Privacy() {
         <li>Referral information: which invite link brought you here and how many friends you invited, plus a hashed (not raw) IP address to detect fake sign-ups.</li>
         <li>How long you actively use the app (used only for the referral engagement reward).</li>
         <li>Reports made against users (reason and match reference) to keep the service safe.</li>
-        <li>Payment status. Card details are handled by Stripe and never touch our servers. If you pay with M-Pesa, your phone number is used only to send the payment request.</li>
+        <li>Payment status and order records (plan, amount, currency, PesaPal tracking id). Payments are taken on PesaPal&apos;s secure page: card numbers and M-Pesa details are entered there and never touch our servers.</li>
         <li>Analytics data, only if you accept analytics cookies.</li>
       </ul>
 

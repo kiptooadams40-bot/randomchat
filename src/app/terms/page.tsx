@@ -23,19 +23,19 @@ export default function Terms() {
       <h2 className="pt-2 text-lg font-semibold text-white">Free tier</h2>
       <p>
         The first {FREE_MATCHES} matches are free. Afterwards, the other person&apos;s video is shown clearly for {TEASE_SECONDS} seconds
-        and then blurred unless you hold an active VIP Pass or Premium subscription. Location matches for free users are blurred from the start.
+        and then blurred unless you hold an active VIP Pass or Premium. Location matches for free users are blurred from the start.
       </p>
 
       <h2 className="pt-2 text-lg font-semibold text-white">VIP Pass</h2>
       <p>
-        The 24-Hour VIP Pass is a one-time purchase, priced in US dollars, that removes blur and time limits and unlocks the location filter for 24 hours.
-        It does not renew. Payments by card are processed by Stripe; M-Pesa is offered where available.
+        The 24-Hour VIP Pass is a one-time purchase (US$0.55 by card, or KES 70 by M-Pesa) that removes blur and time limits and unlocks the location filter for 24 hours.
+        It does not renew. Payments are processed by PesaPal.
       </p>
 
       <h2 className="pt-2 text-lg font-semibold text-white">Premium plans</h2>
       <ul className="list-disc space-y-2 pl-5">
-        <li>Premium comes in weekly, fortnightly and monthly durations at the same price either way. For each plan you choose how to pay: <strong>Recurring Billing</strong>, an auto-renewing subscription that renews at the price shown until you cancel, or a <strong>One-Time Payment</strong>, a single charge for that duration that never renews.</li>
-        <li>Cancel a recurring subscription any time under Account, Manage or cancel subscription. Access continues until the end of the paid period; we don&apos;t refund partial periods unless required by law. One-time payments have nothing to cancel and end on their expiry date.</li>
+        <li>Premium comes in weekly (7 days), fortnightly (14 days) and monthly (30 days) durations. Each is a <strong>one-time payment</strong>: a single charge that never renews. Cards are charged in US dollars and M-Pesa in Kenyan shillings, at the prices shown at checkout, via PesaPal.</li>
+        <li>There is nothing to cancel: access ends on its expiry date, and buying again adds time on top of what remains. We don&apos;t refund partial periods unless required by law.</li>
         <li>Premium includes the Boys / Girls / Both gender filter, which matches you only with people who have chosen to share their gender.</li>
       </ul>
 

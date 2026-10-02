@@ -1,27 +1,28 @@
 export type PlanId = "weekly" | "fortnightly" | "monthly";
+export type PayMethod = "card" | "mpesa";
 
 export type Plan = {
   id: PlanId;
   name: string;
   days: number;
-  priceCents: number;
-  interval: { unit: "week" | "month"; count: number }; // Stripe recurring interval
+  priceCents: number; // USD cents, charged to cards
+  kes: number; // whole KES, charged via M-Pesa
   blurb: string;
 };
 
-/** How a Premium plan is paid: auto-renewing subscription, or a single payment for one duration. */
-export type Billing = "recurring" | "once";
-
-/** Standard Premium store: each plan can be bought either way at the same price. The VIP pass is NOT listed here. */
+/** Premium store. One-time payments: nothing renews. The VIP pass is NOT listed here. */
 export const PLANS: Plan[] = [
-  { id: "weekly", name: "Weekly", days: 7, priceCents: 499, interval: { unit: "week", count: 1 }, blurb: "Billed every week" },
-  { id: "fortnightly", name: "Fortnightly", days: 14, priceCents: 899, interval: { unit: "week", count: 2 }, blurb: "Billed every 2 weeks" },
-  { id: "monthly", name: "Monthly", days: 30, priceCents: 1499, interval: { unit: "month", count: 1 }, blurb: "Best value · billed monthly" },
+  { id: "weekly", name: "Weekly", days: 7, priceCents: 499, kes: 650, blurb: "7 days of Premium" },
+  { id: "fortnightly", name: "Fortnightly", days: 14, priceCents: 899, kes: 1170, blurb: "14 days of Premium" },
+  { id: "monthly", name: "Monthly", days: 30, priceCents: 1499, kes: 1950, blurb: "30 days · best value" },
 ];
 
-/** Flash-deal one-time pass, only offered from the blur paywalls. Priced in USD. */
-export const VIP_PASS = { id: "vip24", name: "24-Hour VIP Pass", hours: 24, priceCents: 55 } as const;
+/** Flash-deal pass, only offered from the blur paywalls. */
+export const VIP_PASS = { id: "vip24", name: "24-Hour VIP Pass", hours: 24, priceCents: 55, kes: 70 } as const;
 export type ProductId = PlanId | typeof VIP_PASS.id;
+
+export const PRODUCT_IDS = ["weekly", "fortnightly", "monthly", "vip24"] as const;
+export const PAY_METHODS = ["card", "mpesa"] as const;
 
 /** Matches 1..7 are fully free (plus referral bonuses); after that the 10s tease + blur applies. */
 export const FREE_MATCHES = 7;
@@ -49,4 +50,33 @@ export function getPlan(id: unknown): Plan | undefined {
 
 export function formatPrice(cents: number) {
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+export function formatKes(kes: number) {
+  return `KES ${kes.toLocaleString("en-US")}`;
+}
+
+export type Quote = {
+  product: ProductId;
+  method: PayMethod;
+  currency: "USD" | "KES";
+  amount: number; // what PesaPal is asked to charge (USD with cents, or whole KES)
+  display: string; // "$4.99" | "KES 650"
+  description: string;
+};
+
+/**
+ * The ONLY place amounts are decided. The browser sends just {product, method};
+ * cards are charged in USD, M-Pesa strictly in KES.
+ */
+export function quote(product: ProductId, method: PayMethod): Quote {
+  const isVip = product === VIP_PASS.id;
+  const plan = isVip ? undefined : getPlan(product);
+  if (!isVip && !plan) throw new Error(`unknown product: ${product}`);
+  const usdCents = isVip ? VIP_PASS.priceCents : plan!.priceCents;
+  const kes = isVip ? VIP_PASS.kes : plan!.kes;
+  const name = isVip ? VIP_PASS.name : `Premium ${plan!.name} (${plan!.days} days)`;
+  return method === "card"
+    ? { product, method, currency: "USD", amount: usdCents / 100, display: formatPrice(usdCents), description: `RandomChat ${name}` }
+    : { product, method, currency: "KES", amount: kes, display: formatKes(kes), description: `RandomChat ${name}` };
 }

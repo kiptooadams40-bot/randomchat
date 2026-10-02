@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import { appUrl } from "./env";
 import type { User } from "./entitlements";
 import { getProfile, setReferrer, touchActivity } from "./repo";
+import { supabaseConfigured } from "./supabase";
 
 export const REF_COOKIE = "rc_ref";
 
@@ -46,6 +47,12 @@ async function sessionUserId(sb: ReturnType<typeof authClient>): Promise<string 
  * them in anonymously on first visit, and loads their profile from Postgres.
  */
 export async function getUser(): Promise<User> {
+  // Fail fast with a precise message instead of a confusing network/auth error later.
+  if (!supabaseConfigured()) {
+    throw new Error(
+      "Supabase is not configured: set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY.",
+    );
+  }
   const jar = await cookies();
   const sb = authClient(jar);
 
@@ -67,7 +74,7 @@ export async function getUser(): Promise<User> {
   }
 
   const u = await getProfile(uid);
-  if (!u) throw new Error(`No profile for user ${uid}: run supabase/schema.sql first.`);
+  if (!u) throw new Error(`No profile for user ${uid}: run supabase/app.sql first.`);
 
   // Only credited referred users still working toward the 10-minute engagement mark
   // need activity tracking, so ordinary requests cost a single database call.

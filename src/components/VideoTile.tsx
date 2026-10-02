@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
+/** One <video>. Shape/size come from `className` (the parent decides rounding). */
 export default function VideoTile({
   stream,
   muted = false,
@@ -10,6 +11,7 @@ export default function VideoTile({
   placeholder,
   blurred = false,
   overlay,
+  compact = false,
   className = "",
 }: {
   stream: MediaStream | null;
@@ -20,6 +22,8 @@ export default function VideoTile({
   /** Heavy CSS blur; the underlying stream/connection is untouched. */
   blurred?: boolean;
   overlay?: React.ReactNode;
+  /** Small (picture-in-picture) presentation: tiny text, no label. */
+  compact?: boolean;
   className?: string;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
@@ -32,7 +36,7 @@ export default function VideoTile({
   }, [stream]);
 
   return (
-    <div className={`relative overflow-hidden rounded-2xl bg-neutral-900 ${className}`}>
+    <div className={`relative overflow-hidden bg-neutral-900 ${className}`}>
       <video
         ref={ref}
         autoPlay
@@ -44,16 +48,16 @@ export default function VideoTile({
         }`}
       />
       {!stream && placeholder && (
-        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-neutral-400">
+        <div className={`absolute inset-0 flex items-center justify-center text-center text-neutral-400 ${compact ? "p-2 text-[10px]" : "p-4 text-sm"}`}>
           {placeholder}
         </div>
       )}
       {blurred && overlay && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/30 p-4 text-center">
+        <div className={`absolute inset-0 flex flex-col items-center justify-center bg-black/30 text-center ${compact ? "gap-1 p-1" : "gap-3 p-4"}`}>
           {overlay}
         </div>
       )}
-      {label && (
+      {label && !compact && (
         <span className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-0.5 text-xs">{label}</span>
       )}
     </div>

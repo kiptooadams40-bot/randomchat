@@ -1,87 +1,44 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { appUrl, isProd, stripeConfigured } from "@/lib/env";
-import { VIP_PASS, getPlan } from "@/lib/plans";
+import { publicOrigin } from "@/lib/env";
+import { PesapalError, createCheckout } from "@/lib/payments";
+import { PAY_METHODS, PRODUCT_IDS } from "@/lib/plans";
 import { getUser } from "@/lib/session";
-import { getStripe } from "@/lib/stripe";
 
+export const dynamic = "force-dynamic";
+
+// The browser sends only WHICH plan and HOW to pay. Amounts/currencies are decided server-side.
 const Body = z.object({
-  product: z.enum(["weekly", "fortnightly", "monthly", "vip24"]),
-  billing: z.enum(["recurring", "once"]).default("recurring"),
+  product: z.enum(PRODUCT_IDS),
+  method: z.enum(PAY_METHODS),
 });
 
+/** Creates the PesaPal order and returns { redirect_url } for the browser to navigate to. */
 export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "bad_product" }, { status: 400 });
-  const { product, billing } = parsed.data;
-  const u = await getUser();
-
-  if (!stripeConfigured()) {
-    // Mock gateway: dev only.
-    if (isProd) return NextResponse.json({ error: "payments_not_configured" }, { status: 503 });
-    return NextResponse.json({ url: `${appUrl()}/checkout/mock?product=${product}&billing=${billing}` });
+  if (!parsed.success) {
+    return NextResponse.json({ error: "bad_request", message: "Choose a plan and a payment method." }, { status: 400 });
   }
-
-  const success_url = `${appUrl()}/checkout/success?session_id={CHECKOUT_SESSION_ID}&product=${product}&billing=${billing}`;
-
-  if (product === VIP_PASS.id) {
-    const session = await getStripe().checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: { currency: "usd", unit_amount: VIP_PASS.priceCents, product_data: { name: VIP_PASS.name } },
-        },
-      ],
-      metadata: { userId: u.id, product },
-      success_url,
-      cancel_url: `${appUrl()}/chat`,
+  try {
+    const u = await getUser();
+    const { redirectUrl, merchantReference } = await createCheckout({
+      userId: u.id,
+      product: parsed.data.product,
+      method: parsed.data.method,
+      origin: publicOrigin(req),
     });
-    return NextResponse.json({ url: session.url });
-  }
-
-  const plan = getPlan(product)!;
-  const metadata = { userId: u.id, product, billing };
-
-  if (billing === "once") {
-    // One-time payment: a single charge for this plan's duration. No subscription is created,
-    // so nothing can renew.
-    const session = await getStripe().checkout.sessions.create({
-      mode: "payment",
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: "usd",
-            unit_amount: plan.priceCents,
-            product_data: { name: `RandomChat Premium – ${plan.name} (one-time, ${plan.days} days)` },
-          },
-        },
-      ],
-      metadata,
-      success_url,
-      cancel_url: `${appUrl()}/pricing`,
-    });
-    return NextResponse.json({ url: session.url });
-  }
-
-  const session = await getStripe().checkout.sessions.create({
-    mode: "subscription",
-    line_items: [
+    return NextResponse.json({ redirect_url: redirectUrl, merchant_reference: merchantReference });
+  } catch (e) {
+    console.error("[api/billing/checkout] failed:", e);
+    const notConfigured = e instanceof PesapalError && e.status === 503;
+    return NextResponse.json(
       {
-        quantity: 1,
-        price_data: {
-          currency: "usd",
-          unit_amount: plan.priceCents,
-          recurring: { interval: plan.interval.unit, interval_count: plan.interval.count },
-          product_data: { name: `RandomChat Premium – ${plan.name} (recurring)` },
-        },
+        error: notConfigured ? "payments_not_configured" : "checkout_failed",
+        message: notConfigured
+          ? "Payments aren't available right now. Please try again later."
+          : "We couldn't start the payment. Please try again in a moment.",
       },
-    ],
-    metadata,
-    subscription_data: { metadata },
-    success_url,
-    cancel_url: `${appUrl()}/pricing`,
-  });
-  return NextResponse.json({ url: session.url });
+      { status: notConfigured ? 503 : 502 },
+    );
+  }
 }

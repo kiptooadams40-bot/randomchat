@@ -2,13 +2,14 @@ import "server-only";
 import { createHash } from "crypto";
 import { isProd } from "./env";
 import { profileToUser, type ProfileRow, type User } from "./entitlements";
-import { FREE_MATCHES, REFERRAL, TEASE_SECONDS, VIP_PASS, getPlan, type Billing, type GenderFilter, type PlanId } from "./plans";
+import { FREE_MATCHES, REFERRAL, TEASE_SECONDS, type GenderFilter, type PayMethod, type ProductId } from "./plans";
 import { supabaseAdmin } from "./supabase";
 
 /**
  * Data access. Postgres is the single source of truth: every function here is a
- * call to a server-only SQL function (supabase/matchmaking.sql), so every Vercel
- * instance sees the same queue, matches, signals and entitlements.
+ * call to a server-only SQL function (supabase/app.sql), executed with the
+ * service-role key, so every Vercel instance sees the same queue, matches,
+ * signals, orders and entitlements.
  */
 
 async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -17,7 +18,6 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   return data as T;
 }
 
-export type Provider = "stripe" | "mpesa" | "mock";
 export type BlurMode = "tease" | "location" | null;
 export type MatchState =
   | { status: "waiting" }
@@ -40,10 +40,6 @@ export const setAgeVerified = (uid: string) => rpc<void>("rc_set_age_verified", 
 
 export const setReferrer = (uid: string, code: string) => rpc<void>("rc_set_referrer", { p_user: uid, p_code: code });
 export const referrerExists = (code: string) => rpc<boolean>("rc_referrer_exists", { p_code: code });
-
-export const setStripeCustomer = (uid: string, customerId: string) =>
-  rpc<void>("rc_set_stripe_customer", { p_user: uid, p_customer: customerId });
-export const getStripeCustomer = (uid: string) => rpc<string | null>("rc_get_stripe_customer", { p_user: uid });
 
 // ── Matchmaking ─────────────────────────────────────────────────────────────
 
@@ -74,23 +70,54 @@ export const drainSignals = (matchId: string, uid: string) =>
 export const addReport = (matchId: string, uid: string, reason: string) =>
   rpc<boolean>("rc_report", { p_match: matchId, p_reporter: uid, p_reason: reason });
 
-// ── Entitlements (idempotent on `ref`) ──────────────────────────────────────
+// ── PesaPal orders ──────────────────────────────────────────────────────────
 
-export function activatePlan(uid: string, planId: PlanId, ref: string, billing: Billing = "recurring", provider: Provider = "stripe") {
-  const plan = getPlan(planId);
-  if (!plan) return Promise.resolve(false);
-  return rpc<boolean>("rc_activate_plan", {
-    p_user: uid, p_plan: plan.id, p_ref: ref, p_billing: billing,
-    p_days: plan.days, p_amount: plan.priceCents, p_provider: provider,
+export type OrderStatus = "pending" | "completed" | "failed" | "reversed";
+export type Order = {
+  merchant_reference: string;
+  user_id: string;
+  product: ProductId;
+  method: PayMethod;
+  currency: "USD" | "KES";
+  amount: number;
+  status: OrderStatus;
+  order_tracking_id: string | null;
+};
+
+export const createOrder = (o: { merchantReference: string; userId: string; product: ProductId; method: PayMethod; currency: string; amount: number }) =>
+  rpc<void>("rc_create_order", {
+    p_merchant: o.merchantReference, p_user: o.userId, p_product: o.product,
+    p_method: o.method, p_currency: o.currency, p_amount: o.amount,
   });
+
+export const setOrderTracking = (merchantReference: string, trackingId: string) =>
+  rpc<void>("rc_set_order_tracking", { p_merchant: merchantReference, p_tracking: trackingId });
+
+/** Look up by our merchant reference, or (fallback) PesaPal's tracking id. */
+export function getOrder(by: { merchantReference?: string | null; trackingId?: string | null }) {
+  const args: Record<string, unknown> = {};
+  if (by.merchantReference) args.p_merchant = by.merchantReference;
+  else if (by.trackingId) args.p_tracking = by.trackingId;
+  else return Promise.resolve(null);
+  return rpc<Order | null>("rc_get_order", args);
 }
 
-/** Bought 24-Hour VIP Pass (stacks onto an active pass). */
-export const grantVipPass = (uid: string, ref: string, provider: Provider = "stripe") =>
-  rpc<boolean>("rc_grant_vip", {
-    p_user: uid, p_hours: VIP_PASS.hours, p_ref: ref, p_kind: "vip_pass",
-    p_provider: provider, p_fixed: false, p_amount: VIP_PASS.priceCents,
+export const markOrder = (merchantReference: string, status: "failed" | "reversed") =>
+  rpc<void>("rc_mark_order", { p_merchant: merchantReference, p_status: status });
+
+export type FulfilResult =
+  | { ok: true; already: boolean; product: ProductId; user_id: string }
+  | { ok: false; reason: "not_found" | "mismatch" };
+
+/** Grants the entitlement exactly once for a payment PesaPal has already confirmed. */
+export const fulfilOrder = (a: { merchantReference: string; trackingId: string; amount: number; currency: string; days: number; hours: number }) =>
+  rpc<FulfilResult>("rc_fulfill_order", {
+    p_merchant: a.merchantReference, p_tracking: a.trackingId, p_amount: a.amount,
+    p_currency: a.currency, p_days: a.days, p_hours: a.hours,
   });
+
+export const getSetting = (key: string) => rpc<string | null>("rc_get_setting", { p_key: key });
+export const setSetting = (key: string, value: string) => rpc<void>("rc_set_setting", { p_key: key, p_value: value });
 
 // ── Referrals ───────────────────────────────────────────────────────────────
 
@@ -113,15 +140,6 @@ export const touchActivity = (uid: string) =>
   rpc<void>("rc_touch_activity", {
     p_user: uid, p_minutes: REFERRAL.engagement.minutes,
     p_users: REFERRAL.engagement.users, p_vip_hours: REFERRAL.engagement.vipHours,
-  });
-
-// ── M-Pesa (simulation) / maintenance ───────────────────────────────────────
-
-export const createMpesa = (uid: string) => rpc<string>("rc_mpesa_create", { p_user: uid });
-
-export const mpesaStatus = (id: string, uid: string, delayMs: number) =>
-  rpc<"pending" | "paid" | "failed" | null>("rc_mpesa_status", {
-    p_id: id, p_user: uid, p_delay_ms: delayMs, p_hours: VIP_PASS.hours, p_amount: VIP_PASS.priceCents,
   });
 
 export const dailyMaintenance = () =>

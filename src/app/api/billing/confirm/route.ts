@@ -1,35 +1,29 @@
 import { NextResponse } from "next/server";
-import { stripeConfigured } from "@/lib/env";
-import { VIP_PASS, getPlan } from "@/lib/plans";
-import { activatePlan, grantVipPass, setStripeCustomer } from "@/lib/repo";
+import { fulfilByReference } from "@/lib/payments";
+import { getOrder } from "@/lib/repo";
 import { getUser } from "@/lib/session";
-import { getStripe } from "@/lib/stripe";
 
 export const dynamic = "force-dynamic";
 
-/** Confirms a Stripe Checkout session on redirect (works without the webhook in local dev). */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Polled by /checkout/success after PesaPal redirects the customer back. Verifies the
+ * payment with PesaPal right now (so Premium/VIP shows up without waiting for the IPN).
+ * Only the user who created the order can read its status.
+ */
 export async function GET(req: Request) {
-  const id = new URL(req.url).searchParams.get("session_id");
-  if (!id || !stripeConfigured()) return NextResponse.json({ error: "bad_request" }, { status: 400 });
-  const u = await getUser();
-  const s = await getStripe().checkout.sessions.retrieve(id);
-  if (s.payment_status !== "paid" || s.metadata?.userId !== u.id) {
-    return NextResponse.json({ ok: false }, { status: 402 });
+  try {
+    const ref = new URL(req.url).searchParams.get("ref") ?? "";
+    if (!UUID.test(ref)) return NextResponse.json({ status: "unknown" }, { status: 404 });
+    const u = await getUser();
+    const order = await getOrder({ merchantReference: ref });
+    if (!order || order.user_id !== u.id) return NextResponse.json({ status: "unknown" }, { status: 404 });
+
+    const outcome = await fulfilByReference({ merchantReference: ref });
+    return NextResponse.json({ status: outcome.status, product: order.product });
+  } catch (e) {
+    console.error("[api/billing/confirm] failed:", e);
+    return NextResponse.json({ status: "error", message: "We couldn't check the payment yet. Please try again." }, { status: 502 });
   }
-  if (typeof s.customer === "string") await setStripeCustomer(u.id, s.customer);
-  const product = s.metadata?.product;
-  if (product === VIP_PASS.id) {
-    await grantVipPass(u.id, s.id);
-  } else {
-    const plan = getPlan(product);
-    if (!plan) return NextResponse.json({ ok: false }, { status: 402 });
-    // Same ref the webhook uses (the first invoice), so the two never double-activate.
-    await activatePlan(
-      u.id,
-      plan.id,
-      typeof s.invoice === "string" ? s.invoice : s.id,
-      s.metadata?.billing === "once" ? "once" : "recurring",
-    );
-  }
-  return NextResponse.json({ ok: true, product });
 }

@@ -1,4 +1,4 @@
-import { FREE_MATCHES, type Billing, type Gender, type PlanId } from "./plans";
+import { FREE_MATCHES, type Gender, type PlanId } from "./plans";
 
 /** A user as the app sees it (mapped from the Supabase `profiles` row). */
 export type User = {
@@ -7,7 +7,6 @@ export type User = {
   gender: Gender | null;
   country: string | null;
   plan: PlanId | null;
-  planBilling: Billing | null;
   planExpiresAt: number | null; // epoch ms
   vipUntil: number | null; // epoch ms (absolute expiry)
   matchesTotal: number;
@@ -29,7 +28,6 @@ export type ProfileRow = {
   gender: Gender | null;
   country: string | null;
   plan: PlanId | null;
-  plan_billing: Billing | null;
   plan_expires_at: string | null;
   vip_until: string | null;
   matches_total: number;
@@ -56,7 +54,6 @@ export function profileToUser(r: ProfileRow): User {
     gender: r.gender,
     country: r.country,
     plan: planActive ? r.plan : null,
-    planBilling: planActive ? r.plan_billing : null,
     planExpiresAt: planActive ? planExpiresAt : null,
     vipUntil: vipUntil && vipUntil > Date.now() ? vipUntil : null,
     matchesTotal: r.matches_total,

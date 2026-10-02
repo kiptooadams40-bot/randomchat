@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useProfileRealtime } from "@/hooks/useProfileRealtime";
 import { useRandomChat, type Filter } from "@/hooks/useRandomChat";
 import { COUNTRIES } from "@/lib/countries";
 import { FREE_MATCHES, GENDER_FILTERS, TEASE_SECONDS } from "@/lib/plans";
@@ -9,7 +10,7 @@ import ChatPanel from "./ChatPanel";
 import Controls from "./Controls";
 import FlashDealModal from "./FlashDealModal";
 import PaywallModal from "./PaywallModal";
-import VideoTile from "./VideoTile";
+import VideoStage from "./VideoStage";
 
 type Session = {
   ageVerified: boolean;
@@ -28,11 +29,6 @@ const STATUS: Record<string, string> = {
   connected: "You're connected. Be kind!",
 };
 
-const OVERLAY = {
-  tease: "The stranger is still waiting! Unlock to reconnect.",
-  location: "Someone in your selected region is waiting! Unlock to see them.",
-} as const;
-
 const selectCls = "rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-100 disabled:opacity-50";
 
 function Countdown({ endsAt }: { endsAt: number }) {
@@ -50,33 +46,108 @@ export default function ChatRoom() {
   const [filter, setFilter] = useState<Filter>("both");
   const [country, setCountry] = useState("any");
   const [premiumPrompt, setPremiumPrompt] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [seen, setSeen] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const chat = useRandomChat({ filter, country });
+  const { unlock, setPaywall } = chat;
 
-  const refresh = useCallback(async () => {
-    const r = await fetch("/api/session", { cache: "no-store" });
-    const s: Session = await r.json();
-    setSession(s);
-    return s;
+  /** Never throws: a failed/empty/non-JSON response becomes `loadError`, not a crash. */
+  const refresh = useCallback(async (): Promise<Session | null> => {
+    try {
+      const r = await fetch("/api/session", { cache: "no-store" });
+      const s = await r.json().catch(() => null);
+      if (!r.ok || !s) {
+        setLoadError(s?.hint ?? s?.error ?? `Service unavailable (${r.status}). Please try again.`);
+        return null;
+      }
+      setLoadError(null);
+      setSession(s as Session);
+      return s as Session;
+    } catch {
+      setLoadError("Network error. Check your connection and try again.");
+      return null;
+    }
   }, []);
 
   useEffect(() => {
     void refresh();
   }, [chat.phase, refresh]);
 
-  const onPaid = useCallback(async () => {
-    await refresh();
-    chat.unlock();
-  }, [refresh, chat]);
+  // ── Instant entitlement sync (no page reload) ─────────────────────────────
+  // 1) Realtime: the server fulfils a payment by updating this visitor's profile row; we hear it.
+  useProfileRealtime(!!session, () => void refresh());
+  // 2) Returning to the tab (e.g. after paying elsewhere) re-reads the server's view.
+  useEffect(() => {
+    const onVisible = () => document.visibilityState === "visible" && void refresh();
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refresh]);
+  // 3) Fallback while a paywall is up: poll, so it works even if Realtime isn't enabled.
+  const paywalled = !!chat.blur || chat.paywall !== null || premiumPrompt;
+  useEffect(() => {
+    if (!paywalled) return;
+    const i = setInterval(() => void refresh(), 5000);
+    return () => clearInterval(i);
+  }, [paywalled, refresh]);
 
-  if (!session) return <p className="text-neutral-400">Loading…</p>;
+  // When access arrives: drop the blur, close any paywall.
+  const access = !!session && (session.premium || session.vip);
+  useEffect(() => {
+    if (access && chat.blur) unlock();
+  }, [access, chat.blur, unlock]);
+  useEffect(() => {
+    if (session?.premium) {
+      setPremiumPrompt(false);
+      if (chat.paywall === "gender") setPaywall(null);
+    }
+  }, [session?.premium, chat.paywall, setPaywall]);
+
+  // Immersive call: lock page scroll while the stage is full-screen.
+  const inCall = chat.phase !== "idle";
+  useEffect(() => {
+    if (!inCall) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [inCall]);
+
+  // Unread badge for the chat sheet.
+  const msgCount = chat.messages.length;
+  const lastCount = useRef(0);
+  useEffect(() => {
+    if (chatOpen || msgCount < lastCount.current) setSeen(msgCount);
+    lastCount.current = msgCount;
+  }, [chatOpen, msgCount]);
+  const unread = Math.max(0, msgCount - seen);
+
+  if (!session) {
+    if (loadError) {
+      return (
+        <div className="max-w-md space-y-3 rounded-2xl border border-red-500/30 bg-red-950/30 p-5" role="alert">
+          <p className="font-semibold">We couldn&apos;t load your session.</p>
+          <p className="text-sm text-neutral-300">{loadError}</p>
+          <button onClick={() => void refresh()} className="rounded-full bg-violet-600 px-5 py-2 text-sm font-medium hover:bg-violet-500">
+            Try again
+          </button>
+        </div>
+      );
+    }
+    return <p className="text-neutral-400">Loading…</p>;
+  }
   if (!session.ageVerified) {
     // Re-read the server's view: only proceeds if the verification actually persisted.
-    return <AgeGate onVerified={async () => (await refresh()).ageVerified} />;
+    return <AgeGate onVerified={async () => (await refresh())?.ageVerified ?? false} />;
   }
 
-  const idle = chat.phase === "idle";
+  const idle = !inCall;
   const connected = chat.phase === "connected";
-  const hasAccess = session.premium || session.vip;
   const dealOpen = chat.paywall === "vip" && !!chat.blur;
   const premiumOpen = chat.paywall === "gender" || premiumPrompt;
 
@@ -93,142 +164,152 @@ export default function ChatRoom() {
   const vipMins = session.vipUntil ? Math.max(1, Math.ceil((session.vipUntil - Date.now()) / 60_000)) : 0;
   const vipLeft = vipMins >= 120 ? `${Math.ceil(vipMins / 60)}h` : `${vipMins}m`;
 
+  const badges = (
+    <div className="flex flex-wrap items-center gap-2">
+      {chat.limitEndsAt && <Countdown endsAt={chat.limitEndsAt} />}
+      {session.premium ? (
+        <span className="rounded-full bg-violet-600 px-3 py-1 text-xs font-bold">Premium · unlimited</span>
+      ) : session.vip ? (
+        <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-black">VIP · {vipLeft} left</span>
+      ) : session.freeMatchesLeft ? (
+        <span className="text-xs text-neutral-300">
+          {session.freeMatchesLeft} free {session.freeMatchesLeft === 1 ? "match" : "matches"} left
+          {session.freeMatchesLeft > FREE_MATCHES ? "" : ` of ${FREE_MATCHES}`}
+        </span>
+      ) : (
+        <span className="text-xs text-amber-400">Preview mode: {TEASE_SECONDS}s clear video per match</span>
+      )}
+    </div>
+  );
+
+  const controls = (
+    <Controls
+      phase={chat.phase}
+      micOn={chat.micOn}
+      camOn={chat.camOn}
+      onStart={chat.start}
+      onStop={chat.stop}
+      onNext={chat.next}
+      onMic={chat.toggleMic}
+      onCam={chat.toggleCam}
+      onReport={chat.report}
+    />
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-        <span className="text-neutral-300">{STATUS[chat.phase]}</span>
-        <div className="flex items-center gap-2">
-          {chat.limitEndsAt && <Countdown endsAt={chat.limitEndsAt} />}
-          {session.premium ? (
-            <span className="rounded-full bg-violet-600 px-3 py-1 text-xs font-bold">Premium · unlimited</span>
-          ) : session.vip ? (
-            <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-black">VIP · {vipLeft} left</span>
-          ) : session.freeMatchesLeft ? (
-            <span className="text-neutral-500">
-              {session.freeMatchesLeft} free {session.freeMatchesLeft === 1 ? "match" : "matches"} left
-              {session.freeMatchesLeft > FREE_MATCHES ? "" : ` of ${FREE_MATCHES}`}
-            </span>
-          ) : (
-            <span className="text-amber-400">Preview mode: {TEASE_SECONDS}s clear video per match</span>
-          )}
-        </div>
-      </div>
-
-      {chat.error && <p className="rounded-lg bg-red-950 p-3 text-sm text-red-200">{chat.error}</p>}
-
-      {/* Preferences (locked while searching / in a chat) */}
-      <div className="space-y-2 text-sm">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-          <label className="flex items-center gap-2 text-neutral-400">
-            I am:
-            <select
-              value={session.gender ?? "none"}
-              disabled={!idle}
-              onChange={(e) => saveProfile({ gender: e.target.value })}
-              className={selectCls}
-            >
-              <option value="none">Prefer not to say</option>
-              <option value="boy">Boy</option>
-              <option value="girl">Girl</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-2 text-neutral-400">
-            I&apos;m in:
-            <select
-              value={session.country ?? "none"}
-              disabled={!idle}
-              onChange={(e) => saveProfile({ country: e.target.value })}
-              className={selectCls}
-            >
-              <option value="none">Not set</option>
-              {COUNTRIES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
-            </select>
-          </label>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-          <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Show me">
-            <span className="text-neutral-400">Show me:</span>
-            {GENDER_FILTERS.map(([f, label]) => (
-              <button
-                key={f}
-                onClick={() => pickFilter(f)}
-                disabled={!idle}
-                aria-pressed={filter === f}
-                className={`rounded-full px-3 py-1 text-xs font-medium disabled:opacity-50 ${
-                  filter === f ? "bg-violet-600" : "bg-neutral-800 hover:bg-neutral-700"
-                }`}
-              >
-                {label} {f !== "both" && !session.premium && <span aria-label="Premium only">🔒</span>}
-              </button>
-            ))}
+      {idle && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="text-neutral-300">{STATUS[chat.phase]}</span>
+            {badges}
           </div>
-          <label className="flex items-center gap-2 text-neutral-400">
-            Find people in:
-            <select value={country} disabled={!idle} onChange={(e) => setCountry(e.target.value)} className={selectCls}>
-              <option value="any">Anywhere</option>
-              {COUNTRIES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
-            </select>
-          </label>
-        </div>
-        {country !== "any" && !hasAccess && (
-          <p className="text-xs text-amber-400">
-            Location matches are blurred until you unlock a VIP pass or Premium.
-          </p>
-        )}
-      </div>
 
-      {/* Equal-size feeds: side by side from sm up, stacked on phones */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <VideoTile
-          stream={chat.remoteStream}
-          className="aspect-video w-full"
-          placeholder={idle ? "Stranger's video appears here" : "Waiting for a stranger…"}
-          label="Stranger"
-          blurred={!!chat.blur}
-          overlay={
-            chat.blur && (
-              <>
-                <p className="animate-pulse text-lg font-extrabold drop-shadow sm:text-xl">{OVERLAY[chat.blur]}</p>
-                <button
-                  onClick={() => chat.setPaywall("vip")}
-                  className="animate-pulse rounded-full bg-amber-400 px-5 py-2 text-sm font-extrabold text-black hover:bg-amber-300"
-                >
-                  Unlock now
-                </button>
-              </>
-            )
-          }
-        />
-        <VideoTile
-          stream={chat.localStream}
-          muted
-          mirrored
-          label="You"
-          placeholder="Your camera preview starts when you press Start"
-          className="aspect-video w-full"
-        />
-      </div>
+          {chat.error && <p className="rounded-lg bg-red-950 p-3 text-sm text-red-200">{chat.error}</p>}
 
-      <Controls
-        phase={chat.phase}
-        micOn={chat.micOn}
-        camOn={chat.camOn}
-        onStart={chat.start}
-        onStop={chat.stop}
-        onNext={chat.next}
-        onMic={chat.toggleMic}
-        onCam={chat.toggleCam}
-        onReport={chat.report}
-      />
+          {/* Preferences (only while not in a chat) */}
+          <div className="space-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <label className="flex items-center gap-2 text-neutral-400">
+                I am:
+                <select value={session.gender ?? "none"} onChange={(e) => saveProfile({ gender: e.target.value })} className={selectCls}>
+                  <option value="none">Prefer not to say</option>
+                  <option value="boy">Boy</option>
+                  <option value="girl">Girl</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                I&apos;m in:
+                <select value={session.country ?? "none"} onChange={(e) => saveProfile({ country: e.target.value })} className={selectCls}>
+                  <option value="none">Not set</option>
+                  {COUNTRIES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
+                </select>
+              </label>
+            </div>
 
-      <div className="h-80">
-        <ChatPanel messages={chat.messages} enabled={connected} onSend={chat.sendMessage} />
-      </div>
-
-      {dealOpen && chat.blur && (
-        <FlashDealModal reason={chat.blur} onPaid={onPaid} onClose={() => chat.setPaywall(null)} />
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Show me">
+                <span className="text-neutral-400">Show me:</span>
+                {GENDER_FILTERS.map(([f, label]) => (
+                  <button
+                    key={f}
+                    onClick={() => pickFilter(f)}
+                    aria-pressed={filter === f}
+                    className={`rounded-full px-3 py-1 text-xs font-medium ${filter === f ? "bg-violet-600" : "bg-neutral-800 hover:bg-neutral-700"}`}
+                  >
+                    {label} {f !== "both" && !session.premium && <span aria-label="Premium only">🔒</span>}
+                  </button>
+                ))}
+              </div>
+              <label className="flex items-center gap-2 text-neutral-400">
+                Find people in:
+                <select value={country} onChange={(e) => setCountry(e.target.value)} className={selectCls}>
+                  <option value="any">Anywhere</option>
+                  {COUNTRIES.map(([c, n]) => <option key={c} value={c}>{n}</option>)}
+                </select>
+              </label>
+            </div>
+            {country !== "any" && !access && (
+              <p className="text-xs text-amber-400">Location matches are blurred until you unlock a VIP pass or Premium.</p>
+            )}
+          </div>
+        </>
       )}
+
+      {/* The call surface. Inline preview when idle; full-screen once a chat starts (same element,
+          so the videos are never remounted). */}
+      <VideoStage
+        remote={chat.remoteStream}
+        local={chat.localStream}
+        blur={chat.blur}
+        idle={idle}
+        onUnlock={() => chat.setPaywall("vip")}
+        className={
+          idle
+            ? "relative mx-auto aspect-[3/4] max-h-[60dvh] w-full max-w-md rounded-2xl sm:aspect-video sm:max-w-none"
+            : "fixed inset-0 z-40"
+        }
+      >
+        {!idle && (
+          <>
+            <div className="absolute inset-x-0 top-0 z-40 flex items-start justify-between gap-2 bg-gradient-to-b from-black/70 to-transparent p-3 pt-[max(0.75rem,env(safe-area-inset-top))] text-sm">
+              <span className="rounded-full bg-black/50 px-3 py-1 text-neutral-100">{STATUS[chat.phase]}</span>
+              {badges}
+            </div>
+
+            {chat.error && (
+              <p className="absolute inset-x-3 top-16 z-40 rounded-lg bg-red-950/90 p-3 text-sm text-red-200">{chat.error}</p>
+            )}
+
+            {chatOpen && (
+              <div className="absolute inset-x-3 bottom-24 z-30 h-[45dvh] sm:right-auto sm:w-96">
+                <ChatPanel messages={chat.messages} enabled={connected} onSend={chat.sendMessage} />
+              </div>
+            )}
+
+            <div className="absolute inset-x-0 bottom-0 z-40 flex flex-wrap items-center justify-center gap-2 bg-gradient-to-t from-black/80 to-transparent p-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              {controls}
+              <button
+                onClick={() => setChatOpen((o) => !o)}
+                aria-expanded={chatOpen}
+                aria-label={unread ? `Chat, ${unread} unread` : "Chat"}
+                className="relative rounded-full bg-neutral-800 px-4 py-2 text-sm font-medium hover:bg-neutral-700"
+              >
+                💬 Chat
+                {unread > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[11px] font-bold">
+                    {unread}
+                  </span>
+                )}
+              </button>
+            </div>
+          </>
+        )}
+      </VideoStage>
+
+      {idle && controls}
+
+      {dealOpen && chat.blur && <FlashDealModal reason={chat.blur} onClose={() => chat.setPaywall(null)} />}
       {premiumOpen && (
         <PaywallModal
           onClose={() => {
