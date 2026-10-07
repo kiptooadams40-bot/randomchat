@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RealtimeChannel } from "@supabase/supabase-js";
+import { supabaseBrowser } from "@/lib/supabase-browser";
 
 export type Phase = "idle" | "searching" | "connecting" | "connected";
 export type ChatMsg = { id: number; from: "me" | "peer"; text: string; original?: string };
-import type { GenderFilter } from "@/lib/plans";
+import { TEASE_SECONDS, type GenderFilter } from "@/lib/plans";
 
 export type Filter = GenderFilter;
 /** "vip" = flash-deal pass (blur unlock); "gender" = Premium upsell. */
@@ -12,10 +14,18 @@ export type PaywallReason = "vip" | "gender" | null;
 export type BlurMode = "tease" | "location" | null;
 
 type Role = "offerer" | "answerer";
-type Signal = { type: "offer" | "answer" | "ice"; payload: any };
+type Signal = { id?: number; type: "offer" | "answer" | "ice"; payload: any };
+type MatchRow = { id: string; user_a: string; user_b: string; blur_a: BlurMode; blur_b: BlurMode };
+type SignalRow = { id: number; match_id: string; type: Signal["type"]; payload: any };
 
-const POLL_MS = 1000;
-const SIGNAL_MS = 700;
+// Matches and signals are pushed over Supabase Realtime. HTTP polling only runs as a
+// heartbeat (keeps the queue row / match alive server-side and catches any missed event),
+// and falls back to the fast cadence whenever the Realtime channel is not connected.
+const POLL_MS = 1000; // queue poll without Realtime
+const HEARTBEAT_MS = 4000; // queue poll with Realtime (stale after 15s server-side)
+const SIGNAL_MS = 700; // signal drain without Realtime
+const SIGNAL_HEARTBEAT_MS = 3000; // signal drain with Realtime (stale after 30s server-side)
+const PEER_TIMEOUT_MS = 8000; // no offer/answer by then: the partner is gone, find another
 const CONNECT_TIMEOUT_MS = 20_000;
 const MAX_MSG = 500;
 
@@ -29,6 +39,20 @@ async function api<T = any>(url: string, body?: unknown): Promise<{ status: numb
   const data = await res.json().catch(() => ({}));
   return { status: res.status, data };
 }
+
+// ICE servers are static config: fetch once per page (prefetched on Start) so a new match
+// never waits on this round trip.
+let icePromise: Promise<RTCIceServer[] | undefined> | null = null;
+const getIceServers = () =>
+  (icePromise ??= api<{ iceServers?: RTCIceServer[] }>("/api/ice")
+    .then(({ status, data }) => {
+      if (status !== 200) icePromise = null;
+      return data.iceServers;
+    })
+    .catch(() => {
+      icePromise = null;
+      return undefined;
+    }));
 
 export function useRandomChat({ filter, country }: { filter: Filter; country: string }) {
   const filterRef = useRef({ filter, country });
@@ -53,6 +77,13 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const msgId = useRef(0);
 
+  // Realtime: one channel per visitor, opened before the first search and kept open.
+  const rtChannel = useRef<RealtimeChannel | null>(null);
+  const rtLive = useRef(false); // channel is SUBSCRIBED: polling drops to heartbeat cadence
+  const onMatch = useRef<((row: MatchRow, uid: string) => void) | null>(null);
+  const sigRoute = useRef<{ mid: string; push: (m: Signal) => void } | null>(null);
+  const early = useRef<{ mid: string; list: Signal[] } | null>(null); // signals that beat beginPeer
+
   const clearTimers = () => {
     timers.current.forEach(clearTimeout);
     timers.current = [];
@@ -61,6 +92,7 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
   const closePeer = useCallback(() => {
     gen.current++;
     clearTimers();
+    sigRoute.current = null;
     dc.current?.close();
     dc.current = null;
     pc.current?.close();
@@ -69,6 +101,41 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     setMatchId(null);
     setLimitEndsAt(null);
     setBlur(null);
+  }, []);
+
+  const ensureRealtime = useCallback(async () => {
+    const sb = supabaseBrowser();
+    if (!sb || rtChannel.current) return;
+    const { data } = await sb.auth.getSession();
+    const session = data.session;
+    if (!session || rtChannel.current) return;
+    const uid = session.user.id;
+    sb.realtime.setAuth(session.access_token); // so RLS applies to this visitor
+    rtChannel.current = sb
+      .channel(`chat:${uid}`)
+      // The waiting side is always user_b (see rc_try_pair): told the instant it is paired.
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "matches", filter: `user_b=eq.${uid}` },
+        (p) => onMatch.current?.(p.new as MatchRow, uid),
+      )
+      // WebRTC offer / answer / ICE addressed to me (RLS: only in a live match I'm in).
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "signals", filter: `to_user=eq.${uid}` },
+        (p) => {
+          const row = p.new as SignalRow;
+          const sig: Signal = { id: row.id, type: row.type, payload: row.payload };
+          const route = sigRoute.current;
+          if (route?.mid === row.match_id) return route.push(sig);
+          // Peer not set up yet for this match: hold it until beginPeer picks it up.
+          if (early.current?.mid === row.match_id) early.current.list.push(sig);
+          else early.current = { mid: row.match_id, list: [sig] };
+        },
+      )
+      .subscribe((status) => {
+        rtLive.current = status === "SUBSCRIBED";
+      });
   }, []);
 
   const ensureMedia = useCallback(async () => {
@@ -102,9 +169,9 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
       setPhase("connecting");
       setMessages([]);
 
-      const { data } = await api<{ iceServers: RTCIceServer[] }>("/api/ice");
+      const iceServers = await getIceServers();
       if (!alive()) return;
-      const conn = new RTCPeerConnection({ iceServers: data.iceServers });
+      const conn = new RTCPeerConnection({ iceServers });
       pc.current = conn;
       const stream = local.current!;
       stream.getTracks().forEach((t) => conn.addTrack(t, stream));
@@ -124,12 +191,15 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
         if (e.candidate && alive()) void send("ice", e.candidate.toJSON());
       };
 
+      // Partner gone: go straight back to the queue (joining ends this match server-side).
       const skip = () => {
         if (!alive()) return;
         closePeer();
-        void api("/api/match/leave", {});
         if (active.current) void startRef.current();
-        else setPhase("idle");
+        else {
+          void api("/api/match/leave", {});
+          setPhase("idle");
+        }
       };
 
       conn.onconnectionstatechange = () => {
@@ -160,16 +230,27 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
         }
       };
 
+      // A partner who closed their tab never answers: don't make the user stare at it.
+      timers.current.push(
+        setTimeout(() => {
+          if (alive() && !conn.remoteDescription) skip();
+        }, PEER_TIMEOUT_MS),
+      );
       // Give up if ICE never completes (e.g. symmetric NAT without TURN).
       const connectTimer = setTimeout(() => {
         if (alive() && conn.connectionState !== "connected") skip();
       }, CONNECT_TIMEOUT_MS);
       timers.current.push(connectTimer);
 
+      // The peer closing the call closes the data channel immediately.
+      const onChannel = (ch: RTCDataChannel) => {
+        wireChannel(ch);
+        ch.onclose = skip;
+      };
       if (role === "offerer") {
-        wireChannel(conn.createDataChannel("chat"));
+        onChannel(conn.createDataChannel("chat"));
       } else {
-        conn.ondatachannel = (e) => wireChannel(e.channel);
+        conn.ondatachannel = (e) => onChannel(e.channel);
       }
 
       const pendingIce: RTCIceCandidateInit[] = [];
@@ -192,7 +273,22 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
         }
       };
 
-      const pollSignals = async () => {
+      // Signals arrive from Realtime and from the drain heartbeat: de-duplicate by row id
+      // and apply strictly in order.
+      const seen = new Set<number>();
+      let chain = Promise.resolve();
+      const push = (m: Signal) => {
+        if (m.id !== undefined) {
+          if (seen.has(m.id)) return;
+          seen.add(m.id);
+        }
+        chain = chain.then(() => (alive() ? handle(m) : undefined)).catch(() => {});
+      };
+      sigRoute.current = { mid, push };
+      if (early.current?.mid === mid) early.current.list.splice(0).forEach(push);
+      early.current = null;
+
+      const drain = async () => {
         if (!alive()) return;
         try {
           const { data } = await api<{ ended?: boolean; messages?: Signal[] }>(
@@ -200,13 +296,13 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
           );
           if (!alive()) return;
           if (data.ended) return skip();
-          for (const m of data.messages ?? []) await handle(m);
+          (data.messages ?? []).forEach(push);
         } catch {
           /* transient network error: keep polling */
         }
-        if (alive()) timers.current.push(setTimeout(pollSignals, SIGNAL_MS));
+        if (alive()) timers.current.push(setTimeout(drain, rtLive.current ? SIGNAL_HEARTBEAT_MS : SIGNAL_MS));
       };
-      void pollSignals();
+      void drain();
 
       if (role === "offerer") {
         const offer = await conn.createOffer();
@@ -222,6 +318,10 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     setPaywall(null);
     active.current = true;
     closePeer();
+    void ensureRealtime().catch(() => {
+      /* Realtime unavailable: polling covers it */
+    });
+    void getIceServers();
     try {
       await ensureMedia();
     } catch {
@@ -232,55 +332,71 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     }
     const myGen = gen.current;
     setPhase("searching");
+
+    const check = (s: any) => {
+      if (gen.current !== myGen) return true;
+      if (s.status === "matched") {
+        onMatch.current = null;
+        void beginPeer(s.matchId, s.role, s.blur ?? null, s.teaseMs ?? TEASE_SECONDS * 1000);
+        return true;
+      }
+      return false;
+    };
+    // Armed before joining: the partner can pair with us before our join response returns.
+    onMatch.current = (row, uid) => {
+      const mine = row.user_a === uid;
+      check({
+        status: "matched",
+        matchId: row.id,
+        role: mine ? "offerer" : "answerer",
+        blur: mine ? row.blur_a : row.blur_b,
+      });
+    };
+
     const joined = await api("/api/match/join", filterRef.current);
     if (gen.current !== myGen) return;
     if (joined.data?.error === "premium_required") {
       active.current = false;
+      onMatch.current = null;
       setPaywall("gender");
       setPhase("idle");
       return;
     }
     if (joined.status !== 200) {
       active.current = false;
+      onMatch.current = null;
       setError(joined.data?.error === "age_verification_required" ? "Please verify your age first." : "Could not join the queue.");
       setPhase("idle");
       return;
     }
-
-    const check = (s: any) => {
-      if (s.status === "matched") {
-        void beginPeer(s.matchId, s.role, s.blur ?? null, s.teaseMs ?? 10_000);
-        return true;
-      }
-      return false;
-    };
     if (check(joined.data)) return;
 
     const poll = async () => {
       if (gen.current !== myGen) return;
       try {
         const { data } = await api("/api/match/poll");
-        if (gen.current !== myGen) return;
         if (check(data)) return;
       } catch {
         /* keep polling */
       }
-      timers.current.push(setTimeout(poll, POLL_MS));
+      timers.current.push(setTimeout(poll, rtLive.current ? HEARTBEAT_MS : POLL_MS));
     };
-    timers.current.push(setTimeout(poll, POLL_MS));
-  }, [beginPeer, closePeer, ensureMedia]);
+    timers.current.push(setTimeout(poll, rtLive.current ? HEARTBEAT_MS : POLL_MS));
+  }, [beginPeer, closePeer, ensureMedia, ensureRealtime]);
   startRef.current = start;
 
   const stop = useCallback(() => {
     active.current = false;
+    onMatch.current = null;
     closePeer();
     void api("/api/match/leave", {});
     setPhase("idle");
     setMessages([]);
   }, [closePeer]);
 
+  // Joining ends the current chat server-side, so Next is a single round trip.
   const next = useCallback(() => {
-    void api("/api/match/leave", {}).finally(() => void startRef.current());
+    void startRef.current();
   }, []);
 
   const sendMessage = useCallback((text: string, original?: string) => {
@@ -321,6 +437,11 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     setCamOn(on);
   }, [camOn]);
 
+  // Open the Realtime channel up front so it is already live when the user hits Start.
+  useEffect(() => {
+    void ensureRealtime().catch(() => {});
+  }, [ensureRealtime]);
+
   // Release everything on unmount / tab close.
   useEffect(() => {
     const bye = () => navigator.sendBeacon?.("/api/match/leave");
@@ -328,10 +449,15 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     return () => {
       window.removeEventListener("pagehide", bye);
       active.current = false;
+      onMatch.current = null;
       closePeer();
       local.current?.getTracks().forEach((t) => t.stop());
       local.current = null;
       void api("/api/match/leave", {});
+      const ch = rtChannel.current;
+      rtChannel.current = null;
+      rtLive.current = false;
+      if (ch) void supabaseBrowser()?.removeChannel(ch);
     };
   }, [closePeer]);
 

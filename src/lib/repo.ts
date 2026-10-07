@@ -24,7 +24,7 @@ export type MatchState =
   | { status: "matched"; matchId: string; role: "offerer" | "answerer"; blur: BlurMode; teaseMs: number };
 
 export type SignalType = "offer" | "answer" | "ice";
-export type DrainResult = { ended: true } | { messages: { type: SignalType; payload: unknown }[] };
+export type DrainResult = { ended: true } | { messages: { id: number; type: SignalType; payload: unknown }[] };
 
 // ── Profiles ────────────────────────────────────────────────────────────────
 

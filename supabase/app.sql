@@ -507,9 +507,11 @@ begin
       when me.matches_total >= p_free + me.bonus_matches then 'tease'
       else null end;
 
-    -- The partner who was waiting first is the WebRTC offerer.
+    -- The joiner is the WebRTC offerer: it learns of the match from this very call and
+    -- sends its offer at once. The waiting partner (user_b) hears about it over Realtime
+    -- (INSERT on matches, filter user_b=eq.<uid>) the moment this row commits.
     insert into public.matches (user_a, user_b, blur_a, blur_b)
-    values (cand.user_id, p_user, v_blur_other, v_blur_me);
+    values (p_user, cand.user_id, v_blur_me, v_blur_other);
 
     update public.profiles set matches_total = matches_total + 1
      where id in (cand.user_id, p_user);
@@ -528,19 +530,21 @@ end $$;
 
 create or replace function public.rc_join_queue(p_user uuid, p_filter text, p_country text, p_free integer)
 returns jsonb language plpgsql as $$
+declare r record;
 begin
   if p_filter not in ('both', 'boys', 'girls') then raise exception 'bad filter'; end if;
   if p_country <> 'any' and p_country !~ '^[A-Z]{2}$' then raise exception 'bad country'; end if;
   perform pg_advisory_xact_lock(727001);
-  perform public.rc_end_if_stale(p_user);
-  if exists (select 1 from public.matches where ended_at is null and p_user in (user_a, user_b)) then
-    return public.rc_match_state(p_user);
-  end if;
+  -- Joining always means "find me a NEW partner": end any chat I'm still in, in the same
+  -- transaction, so Next/Skip is one round trip and can never resume a dead match.
+  for r in select id from public.matches where ended_at is null and p_user in (user_a, user_b) loop
+    perform public.rc_end_match(r.id);
+  end loop;
   return public.rc_try_pair(p_user, p_filter, p_country, p_free);
 end $$;
 
--- Polled every second while waiting. Also RE-TRIES pairing, so two users who
--- enqueued at the same instant still find each other on the next poll.
+-- Heartbeat while waiting (the match itself arrives over Realtime). Keeps the queue
+-- row fresh and RE-TRIES pairing as a safety net in case a Realtime event was missed.
 create or replace function public.rc_poll_match(p_user uuid, p_free integer)
 returns jsonb language plpgsql as $$
 declare q public.matchmaking_queue%rowtype;
@@ -583,7 +587,8 @@ begin
   return true;
 end $$;
 
--- Returns {"messages":[...]} (and clears them), or {"ended":true}.
+-- Returns {"messages":[{id,type,payload}...]} (and clears them), or {"ended":true}.
+-- The id lets the client drop duplicates of rows it already received over Realtime.
 create or replace function public.rc_drain_signals(p_match uuid, p_user uuid)
 returns jsonb language plpgsql as $$
 declare
@@ -610,7 +615,7 @@ begin
     delete from public.signals where match_id = p_match and to_user = p_user
     returning id, type, payload
   )
-  select coalesce(jsonb_agg(jsonb_build_object('type', type, 'payload', payload) order by id), '[]'::jsonb)
+  select coalesce(jsonb_agg(jsonb_build_object('id', id, 'type', type, 'payload', payload) order by id), '[]'::jsonb)
     into v_msgs from d;
   return jsonb_build_object('messages', v_msgs);
 end $$;
