@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { BlurMode } from "@/hooks/useRandomChat";
+import { timeline } from "@/lib/conn-timeline";
 import VideoTile from "./VideoTile";
 
 const OVERLAY = {
@@ -154,6 +155,7 @@ export default function VideoStage({
       <div key="remote" className={remoteIsPip ? PIP : MAIN} {...(remoteIsPip ? pipProps : {})}>
         <VideoTile
           stream={remote}
+          onFirstFrame={() => timeline.mark("firstFrame")}
           className="h-full w-full"
           compact={remoteIsPip}
           label="Stranger"

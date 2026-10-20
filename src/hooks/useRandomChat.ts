@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { recordCandidatePair, timeline } from "@/lib/conn-timeline";
 import { supabaseBrowser } from "@/lib/supabase-browser";
 
 export type Phase = "idle" | "searching" | "connecting" | "connected";
@@ -202,6 +203,14 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
         }
       };
 
+      conn.oniceconnectionstatechange = () => {
+        const s = conn.iceConnectionState;
+        if (alive() && (s === "connected" || s === "completed")) {
+          timeline.mark("iceConnected");
+          void recordCandidatePair(conn);
+        }
+      };
+
       conn.onconnectionstatechange = () => {
         if (!alive()) return;
         const s = conn.connectionState;
@@ -233,12 +242,18 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
       // A partner who closed their tab never answers: don't make the user stare at it.
       timers.current.push(
         setTimeout(() => {
-          if (alive() && !conn.remoteDescription) skip();
+          if (alive() && !conn.remoteDescription) {
+            timeline.patch({ note: "no offer/answer within 8s: skipped" });
+            skip();
+          }
         }, PEER_TIMEOUT_MS),
       );
       // Give up if ICE never completes (e.g. symmetric NAT without TURN).
       const connectTimer = setTimeout(() => {
-        if (alive() && conn.connectionState !== "connected") skip();
+        if (alive() && conn.connectionState !== "connected") {
+          timeline.patch({ note: "not connected within 20s: skipped" });
+          skip();
+        }
       }, CONNECT_TIMEOUT_MS);
       timers.current.push(connectTimer);
 
@@ -261,8 +276,10 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
           return;
         }
         if (m.type === "offer" && role === "answerer") {
+          timeline.mark("offer");
           await conn.setRemoteDescription(m.payload);
         } else if (m.type === "answer" && role === "offerer") {
+          timeline.mark("answer");
           await conn.setRemoteDescription(m.payload);
         } else return;
         for (const c of pendingIce.splice(0)) await conn.addIceCandidate(c).catch(() => {});
@@ -270,6 +287,7 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
           const answer = await conn.createAnswer();
           await conn.setLocalDescription(answer);
           await send("answer", conn.localDescription);
+          timeline.mark("answer");
         }
       };
 
@@ -307,13 +325,17 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
       if (role === "offerer") {
         const offer = await conn.createOffer();
         await conn.setLocalDescription(offer);
-        if (alive()) await send("offer", conn.localDescription);
+        if (alive()) {
+          await send("offer", conn.localDescription);
+          timeline.mark("offer");
+        }
       }
     },
     [closePeer, wireChannel],
   );
 
   const start = useCallback(async () => {
+    timeline.begin();
     setError(null);
     setPaywall(null);
     active.current = true;
@@ -336,6 +358,8 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
     const check = (s: any) => {
       if (gen.current !== myGen) return true;
       if (s.status === "matched") {
+        timeline.mark("matched");
+        timeline.patch({ role: s.role });
         onMatch.current = null;
         void beginPeer(s.matchId, s.role, s.blur ?? null, s.teaseMs ?? TEASE_SECONDS * 1000);
         return true;
@@ -369,6 +393,7 @@ export function useRandomChat({ filter, country }: { filter: Filter; country: st
       setPhase("idle");
       return;
     }
+    timeline.mark("joined");
     if (check(joined.data)) return;
 
     const poll = async () => {

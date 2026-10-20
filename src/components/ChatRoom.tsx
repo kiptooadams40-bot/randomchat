@@ -7,6 +7,7 @@ import { COUNTRIES } from "@/lib/countries";
 import { FREE_MATCHES, GENDER_FILTERS, TEASE_SECONDS } from "@/lib/plans";
 import AgeGate from "./AgeGate";
 import ChatPanel from "./ChatPanel";
+import DebugOverlay from "./DebugOverlay";
 import Controls from "./Controls";
 import FlashDealModal from "./FlashDealModal";
 import PaywallModal from "./PaywallModal";
@@ -198,6 +199,7 @@ export default function ChatRoom() {
 
   return (
     <div className="space-y-4">
+      <DebugOverlay />
       {idle && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm">

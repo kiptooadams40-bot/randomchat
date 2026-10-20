@@ -13,6 +13,7 @@ export default function VideoTile({
   overlay,
   compact = false,
   className = "",
+  onFirstFrame,
 }: {
   stream: MediaStream | null;
   muted?: boolean;
@@ -25,6 +26,8 @@ export default function VideoTile({
   /** Small (picture-in-picture) presentation: tiny text, no label. */
   compact?: boolean;
   className?: string;
+  /** Called once per stream when its first video frame is painted (debug timing). */
+  onFirstFrame?: () => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
 
@@ -33,6 +36,20 @@ export default function VideoTile({
     if (!el) return;
     el.srcObject = stream;
     if (stream) void el.play().catch(() => {});
+  }, [stream]);
+
+  const firstFrame = useRef(onFirstFrame);
+  firstFrame.current = onFirstFrame;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !stream || !firstFrame.current) return;
+    const fire = () => firstFrame.current?.();
+    if ("requestVideoFrameCallback" in el) {
+      const id = el.requestVideoFrameCallback(fire);
+      return () => el.cancelVideoFrameCallback(id);
+    }
+    (el as HTMLVideoElement).addEventListener("loadeddata", fire, { once: true });
+    return () => (el as HTMLVideoElement).removeEventListener("loadeddata", fire);
   }, [stream]);
 
   return (
