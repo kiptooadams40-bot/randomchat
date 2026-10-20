@@ -1,15 +1,13 @@
 import "server-only";
-import { createHash } from "crypto";
-import { isProd } from "./env";
 import { profileToUser, type ProfileRow, type User } from "./entitlements";
 import { FREE_MATCHES, REFERRAL, TEASE_SECONDS, type GenderFilter, type PayMethod, type ProductId } from "./plans";
 import { supabaseAdmin } from "./supabase";
 
 /**
  * Data access. Postgres is the single source of truth: every function here is a
- * call to a server-only SQL function (supabase/app.sql), executed with the
- * service-role key, so every Vercel instance sees the same queue, matches,
- * signals, orders and entitlements.
+ * call to a server-only SQL function (supabase/app.sql + supabase/identity.sql),
+ * executed with the secret key, so every Vercel instance sees the same queue,
+ * matches, orders and entitlements.
  */
 
 async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -21,16 +19,23 @@ async function rpc<T>(fn: string, args: Record<string, unknown>): Promise<T> {
 export type BlurMode = "tease" | "location" | null;
 export type MatchState =
   | { status: "waiting" }
+  | { status: "banned" }
   | { status: "matched"; matchId: string; role: "offerer" | "answerer"; blur: BlurMode; teaseMs: number };
-
-export type SignalType = "offer" | "answer" | "ice";
-export type DrainResult = { ended: true } | { messages: { id: number; type: SignalType; payload: unknown }[] };
 
 // ── Profiles ────────────────────────────────────────────────────────────────
 
 export async function getProfile(uid: string): Promise<User | null> {
   const row = await rpc<ProfileRow | null>("rc_get_profile", { p_user: uid });
   return row ? profileToUser(row) : null;
+}
+
+/** Profile plus whether this JWT's session still exists (revoked by "Sign out of all devices"). */
+export async function loadUser(uid: string, sessionId: string | null) {
+  const row = await rpc<(ProfileRow & { session_ok: boolean; banned: boolean }) | null>("rc_load_user", {
+    p_user: uid,
+    p_session: sessionId,
+  });
+  return row ? { user: profileToUser(row), sessionOk: row.session_ok, banned: row.banned } : null;
 }
 
 export const updateProfile = (uid: string, patch: { gender?: string | null; country?: string | null }) =>
@@ -41,9 +46,24 @@ export const setAgeVerified = (uid: string) => rpc<void>("rc_set_age_verified", 
 export const setReferrer = (uid: string, code: string) => rpc<void>("rc_set_referrer", { p_user: uid, p_code: code });
 export const referrerExists = (code: string) => rpc<boolean>("rc_referrer_exists", { p_code: code });
 
+// ── Accounts ────────────────────────────────────────────────────────────────
+
+/** Moves everything from an anonymous identity into a signed-in account (see rc_merge_users). */
+export const mergeUsers = (from: string, into: string) => rpc<{ merged: boolean }>("rc_merge_users", { p_from: from, p_into: into });
+
+export type DeviceSession = { id: string; user_agent: string | null; created_at: string; last_active: string };
+export const listSessions = (uid: string) => rpc<DeviceSession[]>("rc_list_sessions", { p_user: uid });
+
+export const prepareAccountDelete = (uid: string) => rpc<void>("rc_prepare_account_delete", { p_user: uid });
+
+/** Fixed-window rate limit. Returns false once `max` is exceeded. cost 0 only checks. */
+export const rateHit = (key: string, max: number, windowSeconds: number, cost = 1) =>
+  rpc<boolean>("rc_rate_hit", { p_key: key, p_max: max, p_window_s: windowSeconds, p_cost: cost });
+export const rateReset = (key: string) => rpc<void>("rc_rate_reset", { p_key: key });
+
 // ── Matchmaking ─────────────────────────────────────────────────────────────
 
-type RawState = { status: "waiting" } | { status: "matched"; matchId: string; role: "offerer" | "answerer"; blur: BlurMode };
+type RawState = { status: "waiting" } | { status: "banned" } | { status: "matched"; matchId: string; role: "offerer" | "answerer"; blur: BlurMode };
 const withTease = (s: RawState): MatchState =>
   s.status === "matched" ? { ...s, teaseMs: TEASE_SECONDS * 1000 } : s;
 
@@ -52,42 +72,49 @@ export async function joinQueue(uid: string, filter: GenderFilter, country: stri
   return withTease(await rpc<RawState>("rc_join_queue", { p_user: uid, p_filter: filter, p_country: country, p_free: FREE_MATCHES }));
 }
 
-/** Current match, and re-tries pairing while waiting. */
+/** Current match, and re-tries pairing while waiting (backup for the Broadcast notification). */
 export async function pollMatch(uid: string): Promise<MatchState> {
   return withTease(await rpc<RawState>("rc_poll_match", { p_user: uid, p_free: FREE_MATCHES }));
 }
 
 export const leave = (uid: string) => rpc<void>("rc_leave", { p_user: uid });
 
-// ── Signaling ───────────────────────────────────────────────────────────────
+/** In-call heartbeat: keeps the match alive and tells the client if it has ended. */
+export const matchHeartbeat = (matchId: string, uid: string) =>
+  rpc<{ ended: boolean }>("rc_match_heartbeat", { p_match: matchId, p_user: uid });
 
-export const pushSignal = (matchId: string, uid: string, type: SignalType, payload: unknown) =>
-  rpc<boolean>("rc_push_signal", { p_match: matchId, p_from: uid, p_type: type, p_payload: payload ?? null });
-
-export const drainSignals = (matchId: string, uid: string) =>
-  rpc<DrainResult>("rc_drain_signals", { p_match: matchId, p_user: uid });
+/** Media is up. A referral counts once the chat then lasts 60s+ (settled when it ends). */
+export const markConnected = (matchId: string, uid: string) =>
+  rpc<void>("rc_mark_connected", { p_match: matchId, p_user: uid });
 
 export const addReport = (matchId: string, uid: string, reason: string) =>
   rpc<boolean>("rc_report", { p_match: matchId, p_reporter: uid, p_reason: reason });
 
-// ── PesaPal orders ──────────────────────────────────────────────────────────
+// ── Orders ──────────────────────────────────────────────────────────────────
 
+export type PaymentProvider = "pesapal" | "stripe" | "paypal";
 export type OrderStatus = "pending" | "completed" | "failed" | "reversed";
 export type Order = {
   merchant_reference: string;
-  user_id: string;
+  user_id: string | null;
   product: ProductId;
   method: PayMethod;
   currency: "USD" | "KES";
   amount: number;
   status: OrderStatus;
+  provider: PaymentProvider;
   order_tracking_id: string | null;
+  provider_txn_id: string | null;
 };
 
-export const createOrder = (o: { merchantReference: string; userId: string; product: ProductId; method: PayMethod; currency: string; amount: number }) =>
-  rpc<void>("rc_create_order", {
+export const createOrder = (o: {
+  merchantReference: string; userId: string; product: ProductId; method: PayMethod;
+  currency: string; amount: number; provider: PaymentProvider; email: string | null;
+}) =>
+  rpc<void>("rc_order_create", {
     p_merchant: o.merchantReference, p_user: o.userId, p_product: o.product,
     p_method: o.method, p_currency: o.currency, p_amount: o.amount,
+    p_provider: o.provider, p_email: o.email,
   });
 
 export const setOrderTracking = (merchantReference: string, trackingId: string) =>
@@ -107,12 +134,15 @@ export const markOrder = (merchantReference: string, status: "failed" | "reverse
 
 export type FulfilResult =
   | { ok: true; already: boolean; product: ProductId; user_id: string }
-  | { ok: false; reason: "not_found" | "mismatch" };
+  | { ok: false; reason: "not_found" | "mismatch" | "no_user" };
 
-/** Grants the entitlement exactly once for a payment PesaPal has already confirmed. */
-export const fulfilOrder = (a: { merchantReference: string; trackingId: string; amount: number; currency: string; days: number; hours: number }) =>
-  rpc<FulfilResult>("rc_fulfill_order", {
-    p_merchant: a.merchantReference, p_tracking: a.trackingId, p_amount: a.amount,
+/** Grants exactly once for a payment the provider has ALREADY confirmed (rc_payment_fulfil). */
+export const paymentFulfil = (a: {
+  merchantReference: string; provider: PaymentProvider; txnId: string;
+  amount: number; currency: string; days: number; hours: number;
+}) =>
+  rpc<FulfilResult>("rc_payment_fulfil", {
+    p_merchant: a.merchantReference, p_provider: a.provider, p_txn: a.txnId, p_amount: a.amount,
     p_currency: a.currency, p_days: a.days, p_hours: a.hours,
   });
 
@@ -120,20 +150,6 @@ export const getSetting = (key: string) => rpc<string | null>("rc_get_setting", 
 export const setSetting = (key: string, value: string) => rpc<void>("rc_set_setting", { p_key: key, p_value: value });
 
 // ── Referrals ───────────────────────────────────────────────────────────────
-
-export const hashIp = (ip: string) =>
-  createHash("sha256").update((process.env.IP_HASH_SALT ?? "dev-salt") + ip).digest("hex");
-
-/**
- * A referral is "successful" once the referred user is age-verified and connects
- * to their first chat. In production, one credit per hashed IP per referrer.
- */
-export const creditReferralOnConnect = (uid: string, ipHash: string) =>
-  rpc<boolean>("rc_credit_referral", {
-    p_user: uid, p_ip_hash: ipHash, p_enforce_ip: isProd,
-    p_t1_refs: REFERRAL.tier1.referrals, p_t1_bonus: REFERRAL.tier1.bonusMatches,
-    p_t2_refs: REFERRAL.tier2.referrals, p_t2_bonus: REFERRAL.tier2.bonusMatches,
-  });
 
 /** Accumulates active time; awards the referrer's fixed-expiry engagement VIP pass. */
 export const touchActivity = (uid: string) =>

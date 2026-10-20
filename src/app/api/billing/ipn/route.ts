@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fulfilByReference } from "@/lib/payments";
+import { confirmPesapalOrder } from "@/lib/payments";
 
 export const dynamic = "force-dynamic";
 
@@ -9,7 +9,7 @@ const TRACKING = /^[\w-]{6,100}$/;
 /**
  * PesaPal IPN (registered as a GET callback; POST is accepted too).
  * This endpoint is public and unauthenticated, so NOTHING in the request is trusted:
- * the parameters only tell us which order to re-check. fulfilByReference asks PesaPal
+ * the parameters only tell us which order to re-check. confirmPesapalOrder asks PesaPal
  * for the real status and verifies it against our own order before granting anything.
  */
 async function handle(req: Request) {
@@ -32,7 +32,7 @@ async function handle(req: Request) {
   }
 
   try {
-    const outcome = await fulfilByReference({ merchantReference: reference, trackingId });
+    const outcome = await confirmPesapalOrder({ merchantReference: reference, trackingId });
     console.log(`[api/billing/ipn] ${type} tracking=${trackingId ?? "-"} ref=${reference ?? "-"} -> ${outcome.status}`);
   } catch (e) {
     // Transient (PesaPal/DB down): a 5xx makes PesaPal retry the notification.

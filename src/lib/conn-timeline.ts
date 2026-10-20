@@ -18,9 +18,12 @@ export type Run = {
   note: string | null;
 };
 
-type State = { current: Run | null; history: Run[] };
+/** Per-page facts: whether TURN credentials came back, and the mic processing actually in effect. */
+export type Env = { turn: boolean | null; audio: string | null };
 
-let state: State = { current: null, history: [] };
+type State = { current: Run | null; history: Run[]; env: Env };
+
+let state: State = { current: null, history: [], env: { turn: null, audio: null } };
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
 
@@ -37,7 +40,13 @@ export const timeline = {
     state = {
       current: { t0: performance.now(), role: null, steps: { start: 0 }, local: null, remote: null, protocol: null, rttMs: null, note: null },
       history,
+      env: state.env,
     };
+    emit();
+  },
+
+  setEnv(p: Partial<Env>) {
+    state = { ...state, env: { ...state.env, ...p } };
     emit();
   },
 

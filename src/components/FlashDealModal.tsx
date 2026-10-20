@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { startCheckout } from "@/lib/checkout-client";
 import { VIP_PASS, formatKes, formatPrice, quote, type PayMethod } from "@/lib/plans";
 import MethodToggle from "./MethodToggle";
+import { useSignInBeforePay } from "./SignIn";
 
 /**
  * Flash deal shown only from the blur paywalls. Not linked from the Premium store.
@@ -21,16 +22,21 @@ export default function FlashDealModal({ reason, onClose }: { reason: "tease" | 
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  async function pay() {
-    setBusy(true);
-    setError(null);
-    const err = await startCheckout(VIP_PASS.id, method); // navigates to PesaPal on success
-    if (err) {
-      setError(err);
-      setBusy(false);
-    }
+  const signIn = useSignInBeforePay();
+
+  function pay() {
+    void signIn.guard(async () => {
+      setBusy(true);
+      setError(null);
+      const err = await startCheckout(VIP_PASS.id, method); // navigates to PesaPal on success
+      if (err) {
+        setError(err);
+        setBusy(false);
+      }
+    });
   }
 
+  if (signIn.modal) return signIn.modal;
   return (
     <div
       role="dialog"

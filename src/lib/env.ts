@@ -1,5 +1,3 @@
-export const isProd = process.env.APP_ENV === "production";
-
 export function appUrl() {
   return process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
 }

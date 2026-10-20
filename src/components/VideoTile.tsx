@@ -31,9 +31,20 @@ export default function VideoTile({
 }) {
   const ref = useRef<HTMLVideoElement>(null);
 
+  // React's `muted` prop alone is unreliable (it isn't always applied as an attribute), so
+  // set the property in code too, BEFORE a stream can start playing.
+  const silent = muted || blurred;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    el.muted = silent;
+    el.defaultMuted = muted;
+  }, [silent, muted]);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.muted = silent;
     el.srcObject = stream;
     if (stream) void el.play().catch(() => {});
   }, [stream]);
@@ -58,7 +69,7 @@ export default function VideoTile({
         ref={ref}
         autoPlay
         playsInline
-        muted={muted || blurred}
+        muted={silent}
         aria-label={label ? `${label} video` : undefined}
         className={`h-full w-full object-cover transition-[filter] duration-500 ${mirrored ? "-scale-x-100" : ""} ${
           blurred ? "scale-110 blur-3xl" : ""

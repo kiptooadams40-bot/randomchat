@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Analytics from "@/components/Analytics";
 import CookieConsent from "@/components/CookieConsent";
 import Header from "@/components/Header";
+import InAppBrowserBanner from "@/components/InAppBrowserBanner";
 import "./globals.css";
 
 const siteUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen font-sans antialiased">
+        <InAppBrowserBanner />
         <Header />
         <main className="mx-auto w-full max-w-5xl px-4 py-6">{children}</main>
         <footer className="mx-auto max-w-5xl px-4 pb-24 pt-8 text-xs text-neutral-500">

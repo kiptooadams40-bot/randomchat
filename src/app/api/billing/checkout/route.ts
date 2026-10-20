@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     const u = await getUser();
     const { redirectUrl, merchantReference } = await createCheckout({
       userId: u.id,
+      email: u.anonymous ? null : u.email,
       product: parsed.data.product,
       method: parsed.data.method,
       origin: publicOrigin(req),

@@ -30,6 +30,12 @@ export default function Home() {
           See Premium
         </Link>
       </div>
+      <p className="mt-4 text-sm text-neutral-400">
+        Already have Premium?{" "}
+        <Link href="/account#signin" className="font-medium text-violet-300 underline hover:text-violet-200">
+          Sign in
+        </Link>
+      </p>
 
       <section className="mt-16 grid gap-4 text-left sm:grid-cols-3" aria-label="Features">
         {FEATURES.map(([t, d]) => (

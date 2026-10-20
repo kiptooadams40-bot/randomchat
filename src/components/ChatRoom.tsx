@@ -42,6 +42,30 @@ function Countdown({ endsAt }: { endsAt: number }) {
   return <span className="rounded-full bg-amber-500 px-3 py-1 text-xs font-bold text-black">Free preview: {s}s left</span>;
 }
 
+const TIP_KEY = "rc_tip_earphones";
+const tipSeen = () => {
+  try {
+    return localStorage.getItem(TIP_KEY) === "1";
+  } catch {
+    return false;
+  }
+};
+const markTipSeen = () => {
+  try {
+    localStorage.setItem(TIP_KEY, "1");
+  } catch {
+    /* storage blocked: the tip shows again next time, which is harmless */
+  }
+};
+
+function Modal({ children }: { children: React.ReactNode }) {
+  return (
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/80 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md">{children}</div>
+    </div>
+  );
+}
+
 export default function ChatRoom() {
   const [session, setSession] = useState<Session | null>(null);
   const [filter, setFilter] = useState<Filter>("both");
@@ -50,6 +74,8 @@ export default function ChatRoom() {
   const [chatOpen, setChatOpen] = useState(false);
   const [seen, setSeen] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [started, setStarted] = useState(false); // tapped Start at least once (Realtime allowed)
+  const [gate, setGate] = useState<"age" | "tip" | null>(null);
   const chat = useRandomChat({ filter, country });
   const { unlock, setPaywall } = chat;
 
@@ -77,7 +103,8 @@ export default function ChatRoom() {
 
   // ── Instant entitlement sync (no page reload) ─────────────────────────────
   // 1) Realtime: the server fulfils a payment by updating this visitor's profile row; we hear it.
-  useProfileRealtime(!!session, () => void refresh());
+  //    Only after the first Start tap: visitors who never start open no Realtime connection.
+  useProfileRealtime(started && !!session, () => void refresh());
   // 2) Returning to the tab (e.g. after paying elsewhere) re-reads the server's view.
   useEffect(() => {
     const onVisible = () => document.visibilityState === "visible" && void refresh();
@@ -142,9 +169,17 @@ export default function ChatRoom() {
     }
     return <p className="text-neutral-400">Loading…</p>;
   }
-  if (!session.ageVerified) {
-    // Re-read the server's view: only proceeds if the verification actually persisted.
-    return <AgeGate onVerified={async () => (await refresh())?.ageVerified ?? false} />;
+  /**
+   * Start tap: Realtime + TURN credentials start loading at once, while the age check,
+   * the one-time earphones tip and the camera prompt are on screen.
+   */
+  function onStart() {
+    setStarted(true);
+    chat.prewarm();
+    if (!session?.ageVerified) return setGate("age");
+    if (!tipSeen()) return setGate("tip");
+    setGate(null);
+    void chat.start();
   }
 
   const idle = !inCall;
@@ -188,7 +223,7 @@ export default function ChatRoom() {
       phase={chat.phase}
       micOn={chat.micOn}
       camOn={chat.camOn}
-      onStart={chat.start}
+      onStart={onStart}
       onStop={chat.stop}
       onNext={chat.next}
       onMic={chat.toggleMic}
@@ -262,7 +297,7 @@ export default function ChatRoom() {
           so the videos are never remounted). */}
       <VideoStage
         remote={chat.remoteStream}
-        local={chat.localStream}
+        local={chat.localPreview}
         blur={chat.blur}
         idle={idle}
         onUnlock={() => chat.setPaywall("vip")}
@@ -281,6 +316,19 @@ export default function ChatRoom() {
 
             {chat.error && (
               <p className="absolute inset-x-3 top-16 z-40 rounded-lg bg-red-950/90 p-3 text-sm text-red-200">{chat.error}</p>
+            )}
+            {chat.notice && (
+              <p role="status" className="absolute inset-x-3 top-16 z-40 mx-auto max-w-sm rounded-lg bg-black/80 p-3 text-center text-sm text-neutral-100">
+                {chat.notice}
+              </p>
+            )}
+            {chat.echoWarning && (
+              <div role="alert" className="absolute inset-x-3 top-28 z-40 mx-auto flex max-w-sm items-center gap-3 rounded-lg bg-amber-500 p-3 text-sm font-medium text-black">
+                <span className="flex-1">Echo detected. Use earphones or lower your volume.</span>
+                <button onClick={chat.dismissEcho} className="rounded-full bg-black px-3 py-1 text-xs font-bold text-white">
+                  Unmute
+                </button>
+              </div>
             )}
 
             {chatOpen && (
@@ -310,6 +358,47 @@ export default function ChatRoom() {
       </VideoStage>
 
       {idle && controls}
+
+      {gate === "age" && (
+        <Modal>
+          <AgeGate
+            onVerified={async () => {
+              // Re-read the server's view: only proceeds if the verification actually persisted.
+              const ok = (await refresh())?.ageVerified ?? false;
+              if (ok) {
+                if (!tipSeen()) setGate("tip");
+                else {
+                  setGate(null);
+                  void chat.start();
+                }
+              }
+              return ok;
+            }}
+          />
+          <button onClick={() => setGate(null)} className="mx-auto mt-3 block text-xs text-neutral-400 underline">
+            Cancel
+          </button>
+        </Modal>
+      )}
+      {gate === "tip" && (
+        <Modal>
+          <div className="mx-auto max-w-md space-y-4 rounded-2xl border border-white/10 bg-neutral-900 p-6 text-center">
+            <p className="text-4xl" aria-hidden>🎧</p>
+            <h2 className="text-xl font-semibold">Use earphones for the best sound.</h2>
+            <p className="text-sm text-neutral-400">They stop echo, and the other person hears you clearly.</p>
+            <button
+              onClick={() => {
+                markTipSeen();
+                setGate(null);
+                void chat.start();
+              }}
+              className="w-full rounded-full bg-violet-600 py-2 font-medium hover:bg-violet-500"
+            >
+              Got it
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {dealOpen && chat.blur && <FlashDealModal reason={chat.blur} onClose={() => chat.setPaywall(null)} />}
       {premiumOpen && (
