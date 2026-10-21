@@ -13,7 +13,7 @@ export default function Header() {
           <Link href="/faq" className="hidden hover:text-white sm:inline">FAQ</Link>
           <Link href="/pricing" className="hover:text-white">Premium</Link>
           <Link href="/invite" className="hover:text-white">Invite</Link>
-          <Link href="/account" className="hidden hover:text-white sm:inline">Account</Link>
+          <Link href="/account" className="hover:text-white">Account</Link>
           <Link href="/chat" className="rounded-full bg-violet-600 px-4 py-1.5 font-medium text-white hover:bg-violet-500">
             Start chatting
           </Link>

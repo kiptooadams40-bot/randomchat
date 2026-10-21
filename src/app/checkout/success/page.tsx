@@ -3,17 +3,23 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState } from "react";
+import { SignInForm } from "@/components/SignIn";
 
 type State = "checking" | "paid" | "pending" | "failed" | "review" | "error";
 
 const POLL_MS = 3000;
-const MAX_POLLS = 40; // ~2 minutes: M-Pesa approvals can take a moment
+const MAX_POLLS = 20; // one minute; after that the IPN still activates it in the background
 
-/** PesaPal sends the customer back here. We verify the payment server-side (never trusting the URL). */
+/**
+ * PesaPal sends the customer back here. The server checks with PesaPal and grants through
+ * the same exactly-once path as the IPN; nothing in this URL is trusted.
+ */
 function Success() {
   const ref = useSearchParams().get("ref");
   const [state, setState] = useState<State>(ref ? "checking" : "error");
   const [product, setProduct] = useState<string | null>(null);
+  const [signedIn, setSignedIn] = useState(true);
+  const [justSignedIn, setJustSignedIn] = useState(false);
   const polls = useRef(0);
 
   useEffect(() => {
@@ -27,6 +33,7 @@ function Success() {
         const d = await r.json().catch(() => null);
         if (stop) return;
         if (d?.product) setProduct(d.product);
+        if (typeof d?.signedIn === "boolean") setSignedIn(d.signedIn);
         if (d?.status === "completed") return setState("paid");
         if (d?.status === "failed" || d?.status === "reversed") return setState("failed");
         if (d?.status === "review") return setState("review");
@@ -62,6 +69,21 @@ function Success() {
           <Link href="/chat" className="inline-block rounded-full bg-violet-600 px-5 py-2 font-medium hover:bg-violet-500">
             Start chatting
           </Link>
+          {!signedIn && (
+            <div className="space-y-3 rounded-2xl border border-violet-500/40 bg-violet-950/30 p-5">
+              <h2 className="font-semibold">Sign in so Premium works on all your devices</h2>
+              <p className="text-sm text-neutral-400">
+                Right now it&apos;s saved only in this browser. Add your email (no password) to keep it if you open RandomChat from WhatsApp, Instagram or another browser.
+              </p>
+              <SignInForm
+                onDone={() => {
+                  setSignedIn(true);
+                  setJustSignedIn(true);
+                }}
+              />
+            </div>
+          )}
+          {justSignedIn && <p className="text-sm text-green-400">Signed in. Your {vip ? "VIP pass" : "Premium"} is now saved to your account.</p>}
         </>
       )}
       {state === "pending" && (

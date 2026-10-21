@@ -14,6 +14,7 @@ const Body = z.object({
 
 export async function POST(req: Request) {
   const u = await getUser();
+  if (u.banned) return NextResponse.json({ error: "banned" }, { status: 403 });
   if (!u.ageVerified) return NextResponse.json({ error: "age_verification_required" }, { status: 403 });
   const parsed = Body.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) return NextResponse.json({ error: "bad_request" }, { status: 400 });
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
   if (parsed.data.filter !== "both" && !isPremium(u)) {
     return NextResponse.json({ error: "premium_required" }, { status: 403 });
   }
-  // Written to the shared Postgres queue; pairing happens atomically in the database.
-  return NextResponse.json(await joinQueue(u.id, parsed.data.filter, parsed.data.country));
+  const state = await joinQueue(u.id, parsed.data.filter, parsed.data.country);
+  if (state.status === "banned") return NextResponse.json({ error: "banned" }, { status: 403 });
+  return NextResponse.json(state);
 }

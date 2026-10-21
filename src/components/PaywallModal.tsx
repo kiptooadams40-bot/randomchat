@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { startCheckout } from "@/lib/checkout-client";
 import { PLANS, formatKes, formatPrice, quote, type PayMethod, type PlanId } from "@/lib/plans";
 import MethodToggle from "./MethodToggle";
+import { useSignInBeforePay } from "./SignIn";
 
 /** Premium upsell, shown when a free user tries the Boys / Girls filter. */
 export default function PaywallModal({ onClose }: { onClose: () => void }) {
@@ -20,17 +21,21 @@ export default function PaywallModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const q = quote(plan, method);
+  const signIn = useSignInBeforePay();
 
-  async function pay() {
-    setBusy(true);
-    setError(null);
-    const err = await startCheckout(plan, method); // navigates to PesaPal on success
-    if (err) {
-      setError(err);
-      setBusy(false);
-    }
+  function pay() {
+    void signIn.guard(async () => {
+      setBusy(true);
+      setError(null);
+      const err = await startCheckout(plan, method); // navigates to PesaPal on success
+      if (err) {
+        setError(err);
+        setBusy(false);
+      }
+    });
   }
 
+  if (signIn.modal) return signIn.modal;
   return (
     <div
       role="dialog"

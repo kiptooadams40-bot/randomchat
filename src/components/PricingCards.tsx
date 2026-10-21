@@ -4,24 +4,29 @@ import { useState } from "react";
 import { startCheckout } from "@/lib/checkout-client";
 import { PLANS, formatKes, formatPrice, quote, type PayMethod, type PlanId } from "@/lib/plans";
 import MethodToggle from "./MethodToggle";
+import { useSignInBeforePay } from "./SignIn";
 
 export default function PricingCards() {
   const [busy, setBusy] = useState<PlanId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<Record<PlanId, PayMethod>>({ weekly: "card", fortnightly: "card", monthly: "card" });
+  const signIn = useSignInBeforePay();
 
-  async function pay(plan: PlanId) {
-    setBusy(plan);
-    setError(null);
-    const err = await startCheckout(plan, method[plan]); // navigates to PesaPal on success
-    if (err) {
-      setError(err);
-      setBusy(null);
-    }
+  function pay(plan: PlanId) {
+    void signIn.guard(async () => {
+      setBusy(plan);
+      setError(null);
+      const err = await startCheckout(plan, method[plan]); // navigates to PesaPal on success
+      if (err) {
+        setError(err);
+        setBusy(null);
+      }
+    });
   }
 
   return (
     <div>
+      {signIn.modal}
       <div className="grid gap-4 sm:grid-cols-3">
         {PLANS.map((p) => {
           const q = quote(p.id, method[p.id]);

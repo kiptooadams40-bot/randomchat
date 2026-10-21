@@ -13,7 +13,7 @@ const LABEL: Record<Step, string> = {
   firstFrame: "First video frame",
 };
 
-const empty = { current: null, history: [] as Run[] };
+const empty = { current: null, history: [] as Run[], env: { turn: null, audio: null } };
 
 function summary(r: Run) {
   const m = r.steps.matched;
@@ -52,6 +52,8 @@ export default function DebugOverlay() {
             path: {r.local ?? "?"} ↔ {r.remote ?? "?"} {r.protocol ? `(${r.protocol})` : ""}
             {r.rttMs !== null ? ` rtt ${r.rttMs}ms` : ""}
           </div>
+          <div>turn: {s.env.turn === null ? "?" : s.env.turn ? "yes" : "no (STUN only)"}</div>
+          <div>mic: {s.env.audio ?? "?"}</div>
           {r.note && <div className="text-amber-300">{r.note}</div>}
           {s.history.length > 0 && (
             <div className="border-t border-white/20 pt-1 text-neutral-300">

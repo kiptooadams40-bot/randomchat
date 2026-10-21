@@ -13,7 +13,7 @@ function classify(e: unknown): { status: number; code: string; hint: string } {
     return {
       status: 500,
       code: "supabase_not_configured",
-      hint: "Set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY, then redeploy.",
+      hint: "Set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY and SUPABASE_SECRET_KEY, then redeploy.",
     };
   }
   if (/fetch failed|enotfound|econnrefused|etimedout|network/i.test(msg)) {
@@ -34,7 +34,7 @@ function classify(e: unknown): { status: number; code: string; hint: string } {
     return {
       status: 500,
       code: "database_not_migrated",
-      hint: "Run supabase/app.sql in the Supabase SQL Editor (it is idempotent and reconciles your existing tables).",
+      hint: "Run supabase/app.sql, then supabase/identity.sql, in the Supabase SQL Editor (both are idempotent).",
     };
   }
   return { status: 500, code: "internal_error", hint: "Unexpected server error. Check the server logs." };
@@ -54,6 +54,9 @@ export async function GET() {
         vip: isVip(u),
         vipUntil: u.vipUntil,
         freeMatchesLeft: freeMatchesLeft(u),
+        signedIn: !u.anonymous,
+        email: u.anonymous ? null : u.email,
+        banned: u.banned,
       },
       { headers: NO_STORE },
     );

@@ -52,7 +52,7 @@ export default function InvitePage() {
       <div>
         <h1 className="text-3xl font-bold">Invite friends, earn rewards</h1>
         <p className="mt-2 text-neutral-400">
-          Share your link. A referral counts once your friend confirms they&apos;re 18+ and connects to their first chat.
+          Share your link. A referral counts once your friend confirms they&apos;re 18+ and has a chat of at least 60 seconds with someone other than you.
         </p>
       </div>
 
